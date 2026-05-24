@@ -1,0 +1,12 @@
+Capathy
+
+Capathy integrates with Mandiant capa (https://github.com/mandiant/capa),
+licensed under the Apache License, Version 2.0.
+
+The integration patch contains modifications to capa source files and retains
+upstream copyright notices. New adapter files retain their existing notices.
+The full upstream engine is downloaded separately and is not included in the
+current Capathy source tree or Python distribution.
+
+Go dependencies include separately licensed Tree-sitter grammars, ADK, SQLite,
+and their dependencies. See the Go modules and component READMEs.
