@@ -1,0 +1,1511 @@
+diff --git a/capa/capabilities/static.py b/capa/capabilities/static.py
+index 68b5245c..64ab6ad8 100644
+--- a/capa/capabilities/static.py
++++ b/capa/capabilities/static.py
+@@ -16,7 +16,7 @@ import time
+ import logging
+ import itertools
+ import collections
+-from dataclasses import dataclass
++from dataclasses import field, dataclass
+ 
+ import capa.engine
+ import capa.helpers
+@@ -25,7 +25,14 @@ import capa.render.result_document as rdoc
+ from capa.rules import Scope, RuleSet
+ from capa.engine import FeatureSet, MatchResults
+ from capa.capabilities.common import Capabilities, find_file_capabilities
+-from capa.features.extractors.base_extractor import BBHandle, InsnHandle, FunctionHandle, StaticFeatureExtractor
++from capa.features.extractors.base_extractor import (
++    BBHandle,
++    InsnHandle,
++    FunctionHandle,
++    StatementHandle,
++    StaticFeatureExtractor,
++    ScriptStaticFeatureExtractor,
++)
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -112,6 +119,7 @@ class CodeCapabilities:
+     basic_block_matches: MatchResults
+     instruction_matches: MatchResults
+     feature_count: int
++    statement_matches: MatchResults = field(default_factory=dict)
+ 
+ 
+ def find_code_capabilities(ruleset: RuleSet, extractor: StaticFeatureExtractor, fh: FunctionHandle) -> CodeCapabilities:
+@@ -120,6 +128,9 @@ def find_code_capabilities(ruleset: RuleSet, extractor: StaticFeatureExtractor,
+     """
+     # all features found within this function,
+     # includes features found within basic blocks (and instructions).
++    if isinstance(extractor, ScriptStaticFeatureExtractor):
++        return find_script_code_capabilities(ruleset, extractor, fh)
++
+     function_features: FeatureSet = collections.defaultdict(set)
+ 
+     # matches found at the basic block scope.
+@@ -154,6 +165,7 @@ def find_static_capabilities(
+     all_function_matches: MatchResults = collections.defaultdict(list)
+     all_bb_matches: MatchResults = collections.defaultdict(list)
+     all_insn_matches: MatchResults = collections.defaultdict(list)
++    all_statement_matches: MatchResults = collections.defaultdict(list)
+ 
+     # Accumulate into lists to avoid O(n²) tuple concatenation.
+     # Tuples are immutable, so `t += (x,)` copies the entire tuple each time.
+@@ -200,6 +212,7 @@ def find_static_capabilities(
+                 code_capabilities.function_matches.items(),
+                 code_capabilities.basic_block_matches.items(),
+                 code_capabilities.instruction_matches.items(),
++                code_capabilities.statement_matches.items(),
+             ):
+                 if not ruleset.rules[name].is_subscope_rule():
+                     match_count += len(matches_)
+@@ -219,13 +232,16 @@ def find_static_capabilities(
+             for rule_name, res in code_capabilities.instruction_matches.items():
+                 all_insn_matches[rule_name].extend(res)
+ 
++            for rule_name, res in code_capabilities.statement_matches.items():
++                all_statement_matches[rule_name].extend(res)
++
+             pbar.advance(task)
+ 
+     # collection of features that captures the rule matches within function, BB, and instruction scopes.
+     # mapping from feature (matched rule) to set of addresses at which it matched.
+     function_and_lower_features: FeatureSet = collections.defaultdict(set)
+     for rule_name, results in itertools.chain(
+-        all_function_matches.items(), all_bb_matches.items(), all_insn_matches.items()
++        all_function_matches.items(), all_bb_matches.items(), all_insn_matches.items(), all_statement_matches.items()
+     ):
+         locations = {p[0] for p in results}
+         rule = ruleset[rule_name]
+@@ -244,6 +260,7 @@ def find_static_capabilities(
+             # so there won't be any overlap among these following MatchResults,
+             # and we can merge the dictionaries naively.
+             all_insn_matches.items(),
++            all_statement_matches.items(),
+             all_bb_matches.items(),
+             all_function_matches.items(),
+             all_file_capabilities.matches.items(),
+@@ -251,3 +268,43 @@ def find_static_capabilities(
+     )
+ 
+     return Capabilities(matches, feature_counts, tuple(library_functions_list))
++
++
++def find_statement_capabilities(
++    ruleset: RuleSet, extractor: ScriptStaticFeatureExtractor, fh: FunctionHandle, sh: StatementHandle
++) -> InstructionCapabilities:
++    """Match one statement in isolation before rolling evidence into its function."""
++    features: FeatureSet = collections.defaultdict(set)
++    for feature, address in itertools.chain(
++        extractor.extract_statement_features(fh, sh), extractor.extract_global_features()
++    ):
++        features[feature].add(address)
++    _, matches = ruleset.match(Scope.STATEMENT, features, sh.address)
++    for name, results in matches.items():
++        dependencies = ruleset[name].get_dependencies(ruleset.rules_by_namespace)
++        local_dependencies = {dependency: matches[dependency] for dependency in dependencies if dependency in matches}
++        for _, result in results:
++            result.statement_capabilities = local_dependencies
++    for name, results in matches.items():
++        capa.engine.index_rule_matches(features, ruleset[name], {address for address, _ in results})
++    return InstructionCapabilities(features, matches)
++
++
++def find_script_code_capabilities(
++    ruleset: RuleSet, extractor: ScriptStaticFeatureExtractor, fh: FunctionHandle
++) -> CodeCapabilities:
++    """Aggregate source statements through the function and file rule hierarchy."""
++    features: FeatureSet = collections.defaultdict(set)
++    statements: MatchResults = collections.defaultdict(list)
++    for sh in extractor.get_statements(fh):
++        capabilities = find_statement_capabilities(ruleset, extractor, fh, sh)
++        for feature, locations in capabilities.features.items():
++            features[feature].update(locations)
++        for name, statement_results in capabilities.matches.items():
++            statements[name].extend(statement_results)
++    for feature, address in itertools.chain(
++        extractor.extract_function_features(fh), extractor.extract_global_features()
++    ):
++        features[feature].add(address)
++    _, matches = ruleset.match(Scope.FUNCTION, features, fh.address)
++    return CodeCapabilities(matches, {}, {}, len(features), dict(statements))
+diff --git a/capa/features/common.py b/capa/features/common.py
+index fa2e29f9..2b8c3c10 100644
+--- a/capa/features/common.py
++++ b/capa/features/common.py
+@@ -93,6 +93,9 @@ class Result:
+         self.statement = statement
+         self.children = children
+         self.locations = frozenset(locations) if locations is not None else frozenset()
++        # Source statements can share byte offsets; retain dependency results from
++        # this exact statement instead of looking them up only by address.
++        self.statement_capabilities: Optional[capa.engine.MatchResults] = None
+ 
+     def __eq__(self, other):
+         if isinstance(other, bool):
+@@ -490,7 +493,11 @@ class OS(Feature):
+ FORMAT_PE = "pe"
+ FORMAT_ELF = "elf"
+ FORMAT_DOTNET = "dotnet"
+-VALID_FORMAT = (FORMAT_PE, FORMAT_ELF, FORMAT_DOTNET)
++FORMAT_POWERSHELL = "powershell"
++FORMAT_PYTHON = "python"
++FORMAT_BASH = "bash"
++SCRIPT_FORMATS = (FORMAT_POWERSHELL, FORMAT_PYTHON, FORMAT_BASH)
++VALID_FORMAT = (FORMAT_PE, FORMAT_ELF, FORMAT_DOTNET, *SCRIPT_FORMATS)
+ # internal only, not to be used in rules
+ FORMAT_AUTO = "auto"
+ FORMAT_SC32 = "sc32"
+@@ -503,6 +510,7 @@ FORMAT_FREEZE = "freeze"
+ FORMAT_RESULT = "result"
+ FORMAT_BINJA_DB = "binja_database"
+ STATIC_FORMATS = {
++    *SCRIPT_FORMATS,
+     FORMAT_SC32,
+     FORMAT_SC64,
+     FORMAT_PE,
+diff --git a/capa/features/extractors/base_extractor.py b/capa/features/extractors/base_extractor.py
+index 10841722..c1c94107 100644
+--- a/capa/features/extractors/base_extractor.py
++++ b/capa/features/extractors/base_extractor.py
+@@ -521,3 +521,36 @@ def ThreadFilter(extractor: DynamicFeatureExtractor, threads: set[Address]) -> D
+ 
+ 
+ FeatureExtractor: TypeAlias = Union[StaticFeatureExtractor, DynamicFeatureExtractor]
++
++
++@dataclass
++class StatementHandle:
++    """A source statement, with an ordinal to distinguish coincident offsets."""
++
++    address: Address
++    inner: Any
++    ordinal: int = 0
++
++
++class ScriptStaticFeatureExtractor(StaticFeatureExtractor):
++    """Static source extractor whose code scope is a statement."""
++
++    @abc.abstractmethod
++    def get_statements(self, fh: FunctionHandle) -> Iterator[StatementHandle]:
++        raise NotImplementedError()
++
++    @abc.abstractmethod
++    def extract_statement_features(self, fh: FunctionHandle, sh: StatementHandle) -> Iterator[tuple[Feature, Address]]:
++        raise NotImplementedError()
++
++    def get_basic_blocks(self, fh):
++        return iter(())
++
++    def extract_basic_block_features(self, fh, bbh):
++        return iter(())
++
++    def get_instructions(self, fh, bbh):
++        return iter(())
++
++    def extract_insn_features(self, fh, bbh, ih):
++        return iter(())
+diff --git a/capa/features/extractors/null.py b/capa/features/extractors/null.py
+index f44530c2..4f14a7ae 100644
+--- a/capa/features/extractors/null.py
++++ b/capa/features/extractors/null.py
+@@ -12,7 +12,7 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
+-from typing import Union, TypeAlias
++from typing import Union, TypeAlias, cast
+ from dataclasses import dataclass
+ 
+ from capa.features.common import Feature
+@@ -173,3 +173,35 @@ class NullDynamicFeatureExtractor(DynamicFeatureExtractor):
+ 
+ 
+ NullFeatureExtractor: TypeAlias = Union[NullStaticFeatureExtractor, NullDynamicFeatureExtractor]
++
++
++@dataclass
++class StatementFeatures:
++    """Source-local features retained by a frozen script extractor."""
++
++    features: list[tuple[Address, Feature]]
++
++
++@dataclass
++class ScriptFunctionFeatures(FunctionFeatures):
++    statements: dict[tuple[Address, int], StatementFeatures]
++
++
++# Import here keeps the existing binary extractor declarations unchanged.
++from capa.features.extractors.base_extractor import StatementHandle, ScriptStaticFeatureExtractor
++
++
++@dataclass
++class NullScriptFeatureExtractor(NullStaticFeatureExtractor, ScriptStaticFeatureExtractor):
++    """In-memory source extractor used by tests and freeze deserialization."""
++
++    document: dict | None = None
++
++    def get_statements(self, fh):
++        function = cast(ScriptFunctionFeatures, self.functions[fh.address])
++        for (address, ordinal), statement in sorted(function.statements.items()):
++            yield StatementHandle(address, statement, ordinal)
++
++    def extract_statement_features(self, fh, sh):
++        for address, feature in sh.inner.features:
++            yield feature, address
+diff --git a/capa/features/freeze/__init__.py b/capa/features/freeze/__init__.py
+index 728b2b78..816ab6bf 100644
+--- a/capa/features/freeze/__init__.py
++++ b/capa/features/freeze/__init__.py
+@@ -34,11 +34,13 @@ from capa.features.extractors.base_extractor import (
+     FeatureExtractor,
+     StaticFeatureExtractor,
+     DynamicFeatureExtractor,
++    ScriptStaticFeatureExtractor,
+ )
+ 
+ logger = logging.getLogger(__name__)
+ 
+ CURRENT_VERSION = 3
++SCRIPT_VERSION = 4
+ 
+ 
+ class HashableModel(BaseModel):
+@@ -284,10 +286,17 @@ class BasicBlockFeatures(BaseModel):
+     instructions: tuple[InstructionFeatures, ...]
+ 
+ 
++class StatementFeatures(BaseModel):
++    address: Address
++    ordinal: int
++    features: tuple[FunctionFeature, ...]
++
++
+ class FunctionFeatures(BaseModel):
+     address: Address
+     features: tuple[FunctionFeature, ...]
+     basic_blocks: tuple[BasicBlockFeatures, ...] = Field(alias="basic blocks")
++    statements: tuple[StatementFeatures, ...] | None = None
+     model_config = ConfigDict(populate_by_name=True)
+ 
+ 
+@@ -340,6 +349,7 @@ class Freeze(BaseModel):
+     flavor: Literal["static", "dynamic"]
+     extractor: Extractor
+     features: Features
++    script_evidence: dict | None = None
+     model_config = ConfigDict(populate_by_name=True)
+ 
+ 
+@@ -431,6 +441,21 @@ def dumps_static(extractor: StaticFeatureExtractor, reproducible: bool = False)
+             FunctionFeatures(
+                 address=faddr,
+                 features=tuple(ffeatures),
++                statements=tuple(
++                    StatementFeatures(
++                        address=Address.from_capa(sh.address),
++                        ordinal=sh.ordinal,
++                        features=tuple(
++                            FunctionFeature(
++                                function=faddr, address=Address.from_capa(address), feature=feature_from_capa(feature)
++                            )
++                            for feature, address in extractor.extract_statement_features(f, sh)
++                        ),
++                    )
++                    for sh in extractor.get_statements(f)
++                )
++                if isinstance(extractor, ScriptStaticFeatureExtractor)
++                else None,
+                 basic_blocks=basic_blocks,  # type: ignore[call-arg]  # pydantic alias "basic blocks" not recognized by type checkers
+             )
+         )
+@@ -445,10 +470,13 @@ def dumps_static(extractor: StaticFeatureExtractor, reproducible: bool = False)
+ 
+     extractor_version = "" if reproducible else capa.version.__version__
+     freeze = Freeze(
+-        version=CURRENT_VERSION,
++        version=SCRIPT_VERSION if isinstance(extractor, ScriptStaticFeatureExtractor) else CURRENT_VERSION,
+         base_address=Address.from_capa(extractor.get_base_address()),  # type: ignore[call-arg]  # pydantic alias "base address" not recognized by type checkers
+         sample_hashes=extractor.get_sample_hashes(),
+         flavor="static",
++        script_evidence=getattr(extractor, "document", {})
++        if isinstance(extractor, ScriptStaticFeatureExtractor)
++        else None,
+         extractor=Extractor(name=extractor.__class__.__name__, version=extractor_version),
+         features=features,
+     )
+@@ -579,12 +607,36 @@ def dumps_dynamic(extractor: DynamicFeatureExtractor, reproducible: bool = False
+ def loads_static(s: str) -> StaticFeatureExtractor:
+     """deserialize a set of features (as a NullStaticFeatureExtractor) from a string."""
+     freeze = Freeze.model_validate_json(s)
+-    if freeze.version != CURRENT_VERSION:
++    if freeze.version not in (CURRENT_VERSION, SCRIPT_VERSION):
+         raise ValueError(f"unsupported freeze format version: {freeze.version}")
++    if freeze.version == SCRIPT_VERSION and freeze.script_evidence is None:
++        raise ValueError("script freeze is missing source evidence")
+ 
+     assert freeze.flavor == "static"
+     assert isinstance(freeze.features, StaticFeatures)
+ 
++    if freeze.script_evidence is not None:
++        return null.NullScriptFeatureExtractor(
++            base_address=freeze.base_address.to_capa(),
++            sample_hashes=freeze.sample_hashes,
++            global_features=[f.feature.to_capa() for f in freeze.features.global_],
++            file_features=[(f.address.to_capa(), f.feature.to_capa()) for f in freeze.features.file],
++            functions={
++                f.address.to_capa(): null.ScriptFunctionFeatures(
++                    features=[(fe.address.to_capa(), fe.feature.to_capa()) for fe in f.features],
++                    basic_blocks={},
++                    statements={
++                        (sh.address.to_capa(), sh.ordinal): null.StatementFeatures(
++                            features=[(fe.address.to_capa(), fe.feature.to_capa()) for fe in sh.features]
++                        )
++                        for sh in (f.statements or ())
++                    },
++                )
++                for f in freeze.features.functions
++            },
++            document=freeze.script_evidence,
++        )
++
+     return null.NullStaticFeatureExtractor(
+         base_address=freeze.base_address.to_capa(),
+         sample_hashes=freeze.sample_hashes,
+@@ -675,7 +727,7 @@ def is_freeze(buf: bytes) -> bool:
+ def loads(s: str) -> FeatureExtractor:
+     doc = json.loads(s)
+ 
+-    if doc["version"] != CURRENT_VERSION:
++    if doc["version"] not in (CURRENT_VERSION, SCRIPT_VERSION):
+         raise ValueError(f"unsupported freeze format version: {doc['version']}")
+ 
+     if doc["flavor"] == "static":
+diff --git a/capa/features/freeze/features.py b/capa/features/freeze/features.py
+index 151964e5..568f8f43 100644
+--- a/capa/features/freeze/features.py
++++ b/capa/features/freeze/features.py
+@@ -19,6 +19,7 @@ from pydantic import Field, BaseModel, ConfigDict
+ import capa.features.file
+ import capa.features.insn
+ import capa.features.common
++import capa.features.script
+ import capa.features.basicblock
+ 
+ 
+@@ -26,7 +27,13 @@ class FeatureModel(BaseModel):
+     model_config = ConfigDict(frozen=True, populate_by_name=True)
+ 
+     def to_capa(self) -> capa.features.common.Feature:
+-        if isinstance(self, OSFeature):
++        if isinstance(self, ScriptCallFeature):
++            return capa.features.script.ScriptCall(self.script_call, description=self.description)
++        elif isinstance(self, ScriptVariableFeature):
++            return capa.features.script.ScriptVariable(self.script_variable, self.access, description=self.description)
++        elif isinstance(self, ScriptStructureFeature):
++            return capa.features.script.ScriptStructure(self.script_structure, description=self.description)
++        elif isinstance(self, OSFeature):
+             return capa.features.common.OS(self.os, description=self.description)
+ 
+         elif isinstance(self, ArchFeature):
+@@ -111,7 +118,13 @@ class FeatureModel(BaseModel):
+ 
+ 
+ def feature_from_capa(f: capa.features.common.Feature) -> "Feature":
+-    if isinstance(f, capa.features.common.OS):
++    if isinstance(f, capa.features.script.ScriptCall):
++        return ScriptCallFeature(script_call=f.value, description=f.description)
++    elif isinstance(f, capa.features.script.ScriptVariable):
++        return ScriptVariableFeature(script_variable=f.value, access=f.access, description=f.description)
++    elif isinstance(f, capa.features.script.ScriptStructure):
++        return ScriptStructureFeature(script_structure=f.value, description=f.description)
++    elif isinstance(f, capa.features.common.OS):
+         assert isinstance(f.value, str)
+         return OSFeature(os=f.value, description=f.description)
+ 
+@@ -214,6 +227,25 @@ def feature_from_capa(f: capa.features.common.Feature) -> "Feature":
+         raise NotImplementedError(f"feature_from_capa({type(f)}) not implemented")
+ 
+ 
++class ScriptCallFeature(FeatureModel):
++    type: Literal["script-call"] = "script-call"
++    script_call: str = Field(alias="script-call")
++    description: Optional[str] = None
++
++
++class ScriptVariableFeature(FeatureModel):
++    type: Literal["script-variable"] = "script-variable"
++    script_variable: str = Field(alias="script-variable")
++    access: Literal["read", "write"]
++    description: Optional[str] = None
++
++
++class ScriptStructureFeature(FeatureModel):
++    type: Literal["script-structure"] = "script-structure"
++    script_structure: str = Field(alias="script-structure")
++    description: Optional[str] = None
++
++
+ class OSFeature(FeatureModel):
+     type: Literal["os"] = "os"
+     os: str
+@@ -356,6 +388,9 @@ class OperandOffsetFeature(FeatureModel):
+ 
+ Feature = Annotated[
+     Union[
++        ScriptCallFeature,
++        ScriptVariableFeature,
++        ScriptStructureFeature,
+         OSFeature,
+         ArchFeature,
+         FormatFeature,
+diff --git a/capa/helpers.py b/capa/helpers.py
+index 6d723c37..d4cc2f36 100644
+--- a/capa/helpers.py
++++ b/capa/helpers.py
+@@ -222,7 +222,11 @@ def get_format_from_report(sample: Path) -> str:
+ 
+ def get_format_from_extension(sample: Path) -> str:
+     format_ = FORMAT_UNKNOWN
+-    if sample.name.endswith(EXTENSIONS_SHELLCODE_32):
++    if sample.suffix.lower() in (".ps1", ".psm1", ".py", ".sh", ".bash"):
++        format_ = {".ps1": "powershell", ".psm1": "powershell", ".py": "python", ".sh": "bash", ".bash": "bash"}[
++            sample.suffix.lower()
++        ]
++    elif sample.name.endswith(EXTENSIONS_SHELLCODE_32):
+         format_ = FORMAT_SC32
+     elif sample.name.endswith(EXTENSIONS_SHELLCODE_64):
+         format_ = FORMAT_SC64
+@@ -253,7 +257,8 @@ def get_format(sample: Path) -> str:
+     from capa.features.extractors.common import extract_format
+     from capa.features.extractors.dotnetfile import DotnetFileFeatureExtractor
+ 
+-    buf = sample.read_bytes()
++    with sample.open("rb") as stream:
++        buf = stream.read(0x100)
+ 
+     for feature, _ in extract_format(buf):
+         if feature == Format(FORMAT_PE):
+diff --git a/capa/loader.py b/capa/loader.py
+index bfa2a729..eafb521a 100644
+--- a/capa/loader.py
++++ b/capa/loader.py
+@@ -58,10 +58,12 @@ from capa.features.extractors.base_extractor import (
+     FeatureExtractor,
+     StaticFeatureExtractor,
+     DynamicFeatureExtractor,
++    ScriptStaticFeatureExtractor,
+ )
+ 
+ logger = logging.getLogger(__name__)
+ 
++BACKEND_SCRIPT = "script"
+ BACKEND_VIV = "vivisect"
+ BACKEND_DOTNET = "dotnet"
+ BACKEND_BINJA = "binja"
+@@ -331,6 +333,14 @@ def get_extractor(
+     # stderr=True is used here to redirect the spinner banner to stderr, so that users can redirect capa's output.
+     console = Console(stderr=True, quiet=disable_progress)
+ 
++    if backend == BACKEND_SCRIPT:
++        from capa.features.extractors.script.extractor import TreeSitterScriptExtractor
++
++        try:
++            return TreeSitterScriptExtractor.from_path(input_path, input_format)
++        except ValueError as e:
++            raise CorruptFile(str(e)) from e
++
+     if backend == BACKEND_CAPE:
+         import capa.features.extractors.cape.extractor
+ 
+@@ -636,6 +646,13 @@ def get_signatures(sigs_path: Path) -> list[Path]:
+ def get_sample_analysis(format_, arch, os_, extractor, rules_path, feature_counts, library_functions):
+     if isinstance(extractor, StaticFeatureExtractor):
+         return rdoc.StaticAnalysis(
++            script={
++                **(getattr(extractor, "document", None) or {}),
++                "extractor_version": (getattr(extractor, "document", None) or {}).get("extractor_version", "unknown"),
++                "normalization_version": (getattr(extractor, "document", None) or {}).get("normalization_version", 1),
++            }
++            if isinstance(extractor, ScriptStaticFeatureExtractor)
++            else None,
+             format=format_,
+             arch=arch,
+             os=os_,
+@@ -816,6 +833,29 @@ def compute_static_layout(rules: RuleSet, extractor: StaticFeatureExtractor, cap
+     otherwise, we may pollute the json document with
+     a large amount of un-referenced data.
+     """
++    if isinstance(extractor, ScriptStaticFeatureExtractor):
++        matched_statements = {
++            address
++            for name, matches in capabilities.items()
++            if capa.rules.Scope.STATEMENT in rules[name].scopes
++            for address, _ in matches
++        }
++        functions = []
++        for fh in extractor.get_functions():
++            addresses = tuple(
++                frz.Address.from_capa(sh.address)
++                for sh in extractor.get_statements(fh)
++                if sh.address in matched_statements
++            )
++            functions.append(
++                rdoc.FunctionLayout(
++                    address=frz.Address.from_capa(fh.address),
++                    matched_basic_blocks=(),
++                    matched_statements=addresses or None,
++                )
++            )
++        return rdoc.StaticLayout(functions=tuple(functions))
++
+     functions_by_bb: dict[Address, Address] = {}
+     bbs_by_function: dict[Address, list[Address]] = {}
+     for f in extractor.get_functions():
+diff --git a/capa/main.py b/capa/main.py
+index 837974f5..254e0879 100644
+--- a/capa/main.py
++++ b/capa/main.py
+@@ -52,6 +52,7 @@ from capa.loader import (
+     BACKEND_FREEZE,
+     BACKEND_GHIDRA,
+     BACKEND_PEFILE,
++    BACKEND_SCRIPT,
+     BACKEND_DRAKVUF,
+     BACKEND_BINEXPORT2,
+ )
+@@ -268,6 +269,9 @@ def install_common_args(parser, wanted=None):
+     if "format" in wanted:
+         formats = [
+             (FORMAT_AUTO, "(default) detect file type automatically"),
++            ("powershell", "PowerShell source (native script helper)"),
++            ("python", "Python source (native script helper)"),
++            ("bash", "Bash source (native script helper)"),
+             (FORMAT_PE, "Windows PE file"),
+             (FORMAT_DOTNET, ".NET PE file"),
+             (FORMAT_ELF, "Executable and Linkable Format"),
+@@ -293,6 +297,7 @@ def install_common_args(parser, wanted=None):
+     if "backend" in wanted:
+         backends = [
+             (BACKEND_AUTO, "(default) detect appropriate backend automatically"),
++            (BACKEND_SCRIPT, "native Tree-sitter script helper"),
+             (BACKEND_VIV, "vivisect"),
+             (BACKEND_IDA, "IDA via idalib"),
+             (BACKEND_PEFILE, "pefile (file features only)"),
+@@ -580,6 +585,9 @@ def get_backend_from_cli(args, input_format: str) -> str:
+     if args.backend != BACKEND_AUTO:
+         return args.backend
+ 
++    if input_format in ("powershell", "python", "bash"):
++        return BACKEND_SCRIPT
++
+     if input_format == FORMAT_CAPE:
+         return BACKEND_CAPE
+ 
+diff --git a/capa/render/proto/__init__.py b/capa/render/proto/__init__.py
+index c3908e66..53143248 100644
+--- a/capa/render/proto/__init__.py
++++ b/capa/render/proto/__init__.py
+@@ -32,6 +32,7 @@ $ protoc.exe --python_out=. --mypy_out=. <path_to_proto> (e.g. capa/render/proto
+ Alternatively, --pyi_out=. can be used to generate a Python Interface file that supports development
+ """
+ 
++import json
+ import datetime
+ from typing import Any, Union
+ 
+@@ -152,7 +153,9 @@ def addr_to_pb2(addr: frz.Address) -> capa_pb2.Address:
+ 
+ 
+ def scope_to_pb2(scope: capa.rules.Scope) -> capa_pb2.Scope.ValueType:
+-    if scope == capa.rules.Scope.FILE:
++    if scope == capa.rules.Scope.STATEMENT:
++        return capa_pb2.Scope.SCOPE_STATEMENT
++    elif scope == capa.rules.Scope.FILE:
+         return capa_pb2.Scope.SCOPE_FILE
+     elif scope == capa.rules.Scope.FUNCTION:
+         return capa_pb2.Scope.SCOPE_FUNCTION
+@@ -199,10 +202,12 @@ def static_analysis_to_pb2(analysis: rd.StaticAnalysis) -> capa_pb2.StaticAnalys
+         extractor=analysis.extractor,
+         rules=list(analysis.rules),
+         base_address=addr_to_pb2(analysis.base_address),
++        script_json=json.dumps(analysis.script, sort_keys=True) if analysis.script is not None else None,
+         layout=capa_pb2.StaticLayout(
+             functions=[
+                 capa_pb2.FunctionLayout(
+                     address=addr_to_pb2(f.address),
++                    matched_statements=[addr_to_pb2(address) for address in f.matched_statements or ()],
+                     matched_basic_blocks=[
+                         capa_pb2.BasicBlockLayout(address=addr_to_pb2(bb.address)) for bb in f.matched_basic_blocks
+                     ],
+@@ -325,7 +330,26 @@ def statement_to_pb2(statement: rd.Statement) -> capa_pb2.StatementNode:
+ 
+ 
+ def feature_to_pb2(f: frzf.Feature) -> capa_pb2.FeatureNode:
+-    if isinstance(f, frzf.OSFeature):
++    if isinstance(f, frzf.ScriptCallFeature):
++        return capa_pb2.FeatureNode(
++            type="feature",
++            script_call=capa_pb2.ScriptCallFeature(type=f.type, script_call=f.script_call, description=f.description),
++        )
++    elif isinstance(f, frzf.ScriptVariableFeature):
++        return capa_pb2.FeatureNode(
++            type="feature",
++            script_variable=capa_pb2.ScriptVariableFeature(
++                type=f.type, script_variable=f.script_variable, access=f.access, description=f.description
++            ),
++        )
++    elif isinstance(f, frzf.ScriptStructureFeature):
++        return capa_pb2.FeatureNode(
++            type="feature",
++            script_structure=capa_pb2.ScriptStructureFeature(
++                type=f.type, script_structure=f.script_structure, description=f.description
++            ),
++        )
++    elif isinstance(f, frzf.OSFeature):
+         return capa_pb2.FeatureNode(
+             type="feature", os=capa_pb2.OSFeature(type=f.type, os=f.os, description=f.description)
+         )
+@@ -646,7 +670,9 @@ def addr_from_pb2(addr: capa_pb2.Address) -> frz.Address:
+ 
+ 
+ def scope_from_pb2(scope: capa_pb2.Scope.ValueType) -> capa.rules.Scope:
+-    if scope == capa_pb2.Scope.SCOPE_FILE:
++    if scope == capa_pb2.Scope.SCOPE_STATEMENT:
++        return capa.rules.Scope.STATEMENT
++    elif scope == capa_pb2.Scope.SCOPE_FILE:
+         return capa.rules.Scope.FILE
+     elif scope == capa_pb2.Scope.SCOPE_FUNCTION:
+         return capa.rules.Scope.FUNCTION
+@@ -690,10 +716,12 @@ def static_analysis_from_pb2(analysis: capa_pb2.StaticAnalysis) -> rd.StaticAnal
+         extractor=analysis.extractor,
+         rules=tuple(analysis.rules),
+         base_address=addr_from_pb2(analysis.base_address),
++        script=json.loads(analysis.script_json) if analysis.HasField("script_json") else None,
+         layout=rd.StaticLayout(
+             functions=tuple([
+                 rd.FunctionLayout(
+                     address=addr_from_pb2(f.address),
++                    matched_statements=tuple(addr_from_pb2(address) for address in f.matched_statements) or None,
+                     matched_basic_blocks=tuple([
+                         rd.BasicBlockLayout(address=addr_from_pb2(bb.address)) for bb in f.matched_basic_blocks
+                     ]),
+@@ -821,7 +849,18 @@ def feature_from_pb2(f: capa_pb2.FeatureNode) -> frzf.Feature:
+     # upstream issue: https://github.com/python/mypy/issues/6233
+     ff: Any
+ 
+-    if type_ == "os":
++    if type_ == "script_call":
++        ff = f.script_call
++        return frzf.ScriptCallFeature(script_call=ff.script_call, description=ff.description or None)
++    elif type_ == "script_variable":
++        ff = f.script_variable
++        return frzf.ScriptVariableFeature(
++            script_variable=ff.script_variable, access=ff.access, description=ff.description or None
++        )
++    elif type_ == "script_structure":
++        ff = f.script_structure
++        return frzf.ScriptStructureFeature(script_structure=ff.script_structure, description=ff.description or None)
++    elif type_ == "os":
+         ff = f.os
+         return frzf.OSFeature(os=ff.os, description=ff.description or None)
+     elif type_ == "arch":
+diff --git a/capa/render/proto/capa.proto b/capa/render/proto/capa.proto
+index b0723474..5a231940 100644
+--- a/capa/render/proto/capa.proto
++++ b/capa/render/proto/capa.proto
+@@ -160,9 +160,31 @@ message FeatureNode {
+     OperandNumberFeature operand_number = 22;
+     OperandOffsetFeature operand_offset = 23;
+     BasicBlockFeature basic_block = 24;
++    ScriptCallFeature script_call = 25;
++    ScriptVariableFeature script_variable = 26;
++    ScriptStructureFeature script_structure = 27;
+   };
+ }
+ 
++message ScriptCallFeature {
++  string type = 1;
++  string script_call = 2;
++  optional string description = 3;
++}
++
++message ScriptVariableFeature {
++  string type = 1;
++  string script_variable = 2;
++  string access = 3;
++  optional string description = 4;
++}
++
++message ScriptStructureFeature {
++  string type = 1;
++  string script_structure = 2;
++  optional string description = 3;
++}
++
+ message FormatFeature {
+   string type = 1;
+   string format = 2;
+@@ -177,6 +199,7 @@ message FunctionFeatureCount {
+ message FunctionLayout {
+   Address address = 1;
+   repeated BasicBlockLayout matched_basic_blocks = 2;
++  repeated Address matched_statements = 3;
+ }
+ 
+ message FunctionNameFeature {
+@@ -379,6 +402,7 @@ enum Scope {
+   SCOPE_THREAD = 6;
+   SCOPE_CALL = 7;
+   SCOPE_SPAN_OF_CALLS = 8;
++  SCOPE_STATEMENT = 9;
+ }
+ 
+ message Scopes {
+@@ -418,6 +442,7 @@ message StaticAnalysis {
+   StaticLayout layout = 7;
+   StaticFeatureCounts feature_counts = 8;
+   repeated LibraryFunction library_functions = 9;
++  optional string script_json = 10;
+ }
+ 
+ message StaticFeatureCounts {
+diff --git a/capa/render/proto/capa_pb2.py b/capa/render/proto/capa_pb2.py
+index b581c9ea..30ee7edc 100644
+--- a/capa/render/proto/capa_pb2.py
++++ b/capa/render/proto/capa_pb2.py
+@@ -2,7 +2,7 @@
+ # Generated by the protocol buffer compiler.  DO NOT EDIT!
+ # NO CHECKED-IN PROTOBUF GENCODE
+ # source: capa/render/proto/capa.proto
+-# Protobuf Python Version: 5.28.3
++# Protobuf Python Version: 5.28.1
+ """Generated protocol buffer code."""
+ from google.protobuf import descriptor as _descriptor
+ from google.protobuf import descriptor_pool as _descriptor_pool
+@@ -13,7 +13,7 @@ _runtime_version.ValidateProtobufRuntimeVersion(
+     _runtime_version.Domain.PUBLIC,
+     5,
+     28,
+-    3,
++    1,
+     '',
+     'capa/render/proto/capa.proto'
+ )
+@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
+ 
+ 
+ 
+-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1c\x63\x61pa/render/proto/capa.proto\x12\rmandiant.capa\"Q\n\nAPIFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0b\n\x03\x61pi\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"\xb3\x02\n\x07\x41\x64\x64ress\x12(\n\x04type\x18\x01 \x01(\x0e\x32\x1a.mandiant.capa.AddressType\x12#\n\x01v\x18\x02 \x01(\x0b\x32\x16.mandiant.capa.IntegerH\x00\x12\x33\n\x0ctoken_offset\x18\x03 \x01(\x0b\x32\x1b.mandiant.capa.Token_OffsetH\x00\x12+\n\x08ppid_pid\x18\x04 \x01(\x0b\x32\x17.mandiant.capa.Ppid_PidH\x00\x12\x33\n\x0cppid_pid_tid\x18\x05 \x01(\x0b\x32\x1b.mandiant.capa.Ppid_Pid_TidH\x00\x12\x39\n\x0fppid_pid_tid_id\x18\x06 \x01(\x0b\x32\x1e.mandiant.capa.Ppid_Pid_Tid_IdH\x00\x42\x07\n\x05value\"\x9c\x02\n\x08\x41nalysis\x12\x0e\n\x06\x66ormat\x18\x01 \x01(\t\x12\x0c\n\x04\x61rch\x18\x02 \x01(\t\x12\n\n\x02os\x18\x03 \x01(\t\x12\x11\n\textractor\x18\x04 \x01(\t\x12\r\n\x05rules\x18\x05 \x03(\t\x12,\n\x0c\x62\x61se_address\x18\x06 \x01(\x0b\x32\x16.mandiant.capa.Address\x12%\n\x06layout\x18\x07 \x01(\x0b\x32\x15.mandiant.capa.Layout\x12\x34\n\x0e\x66\x65\x61ture_counts\x18\x08 \x01(\x0b\x32\x1c.mandiant.capa.FeatureCounts\x12\x39\n\x11library_functions\x18\t \x03(\x0b\x32\x1e.mandiant.capa.LibraryFunction\"S\n\x0b\x41rchFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0c\n\x04\x61rch\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"`\n\nAttackSpec\x12\r\n\x05parts\x18\x01 \x03(\t\x12\x0e\n\x06tactic\x18\x02 \x01(\t\x12\x11\n\ttechnique\x18\x03 \x01(\t\x12\x14\n\x0csubtechnique\x18\x04 \x01(\t\x12\n\n\x02id\x18\x05 \x01(\t\"K\n\x11\x42\x61sicBlockFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x02 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\";\n\x10\x42\x61sicBlockLayout\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\"U\n\x0c\x42ytesFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05\x62ytes\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"g\n\x15\x43haracteristicFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x16\n\x0e\x63haracteristic\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"V\n\x0c\x43lassFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0e\n\x06\x63lass_\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"K\n\x11\x43ompoundStatement\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x02 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"\xc8\x01\n\x0f\x44ynamicAnalysis\x12\x0e\n\x06\x66ormat\x18\x01 \x01(\t\x12\x0c\n\x04\x61rch\x18\x02 \x01(\t\x12\n\n\x02os\x18\x03 \x01(\t\x12\x11\n\textractor\x18\x04 \x01(\t\x12\r\n\x05rules\x18\x05 \x03(\t\x12,\n\x06layout\x18\x06 \x01(\x0b\x32\x1c.mandiant.capa.DynamicLayout\x12;\n\x0e\x66\x65\x61ture_counts\x18\x07 \x01(\x0b\x32#.mandiant.capa.DynamicFeatureCounts\"[\n\x14\x44ynamicFeatureCounts\x12\x0c\n\x04\x66ile\x18\x01 \x01(\x04\x12\x35\n\tprocesses\x18\x02 \x03(\x0b\x32\".mandiant.capa.ProcessFeatureCount\"@\n\rDynamicLayout\x12/\n\tprocesses\x18\x01 \x03(\x0b\x32\x1c.mandiant.capa.ProcessLayout\"W\n\rExportFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0e\n\x06\x65xport\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"U\n\rFeatureCounts\x12\x0c\n\x04\x66ile\x18\x01 \x01(\x04\x12\x36\n\tfunctions\x18\x02 \x03(\x0b\x32#.mandiant.capa.FunctionFeatureCount\"\xb9\t\n\x0b\x46\x65\x61tureNode\x12\x0c\n\x04type\x18\x01 \x01(\t\x12&\n\x02os\x18\x02 \x01(\x0b\x32\x18.mandiant.capa.OSFeatureH\x00\x12*\n\x04\x61rch\x18\x03 \x01(\x0b\x32\x1a.mandiant.capa.ArchFeatureH\x00\x12.\n\x06\x66ormat\x18\x04 \x01(\x0b\x32\x1c.mandiant.capa.FormatFeatureH\x00\x12,\n\x05match\x18\x05 \x01(\x0b\x32\x1b.mandiant.capa.MatchFeatureH\x00\x12>\n\x0e\x63haracteristic\x18\x06 \x01(\x0b\x32$.mandiant.capa.CharacteristicFeatureH\x00\x12.\n\x06\x65xport\x18\x07 \x01(\x0b\x32\x1c.mandiant.capa.ExportFeatureH\x00\x12/\n\x07import_\x18\x08 \x01(\x0b\x32\x1c.mandiant.capa.ImportFeatureH\x00\x12\x30\n\x07section\x18\t \x01(\x0b\x32\x1d.mandiant.capa.SectionFeatureH\x00\x12;\n\rfunction_name\x18\n \x01(\x0b\x32\".mandiant.capa.FunctionNameFeatureH\x00\x12\x34\n\tsubstring\x18\x0b \x01(\x0b\x32\x1f.mandiant.capa.SubstringFeatureH\x00\x12,\n\x05regex\x18\x0c \x01(\x0b\x32\x1b.mandiant.capa.RegexFeatureH\x00\x12.\n\x06string\x18\r \x01(\x0b\x32\x1c.mandiant.capa.StringFeatureH\x00\x12-\n\x06\x63lass_\x18\x0e \x01(\x0b\x32\x1b.mandiant.capa.ClassFeatureH\x00\x12\x34\n\tnamespace\x18\x0f \x01(\x0b\x32\x1f.mandiant.capa.NamespaceFeatureH\x00\x12(\n\x03\x61pi\x18\x10 \x01(\x0b\x32\x19.mandiant.capa.APIFeatureH\x00\x12\x33\n\tproperty_\x18\x11 \x01(\x0b\x32\x1e.mandiant.capa.PropertyFeatureH\x00\x12.\n\x06number\x18\x12 \x01(\x0b\x32\x1c.mandiant.capa.NumberFeatureH\x00\x12,\n\x05\x62ytes\x18\x13 \x01(\x0b\x32\x1b.mandiant.capa.BytesFeatureH\x00\x12.\n\x06offset\x18\x14 \x01(\x0b\x32\x1c.mandiant.capa.OffsetFeatureH\x00\x12\x32\n\x08mnemonic\x18\x15 \x01(\x0b\x32\x1e.mandiant.capa.MnemonicFeatureH\x00\x12=\n\x0eoperand_number\x18\x16 \x01(\x0b\x32#.mandiant.capa.OperandNumberFeatureH\x00\x12=\n\x0eoperand_offset\x18\x17 \x01(\x0b\x32#.mandiant.capa.OperandOffsetFeatureH\x00\x12\x37\n\x0b\x62\x61sic_block\x18\x18 \x01(\x0b\x32 .mandiant.capa.BasicBlockFeatureH\x00\x42\t\n\x07\x66\x65\x61ture\"W\n\rFormatFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0e\n\x06\x66ormat\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"N\n\x14\x46unctionFeatureCount\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\x12\r\n\x05\x63ount\x18\x02 \x01(\x04\"x\n\x0e\x46unctionLayout\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\x12=\n\x14matched_basic_blocks\x18\x02 \x03(\x0b\x32\x1f.mandiant.capa.BasicBlockLayout\"d\n\x13\x46unctionNameFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x15\n\rfunction_name\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"X\n\rImportFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0f\n\x07import_\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\":\n\x06Layout\x12\x30\n\tfunctions\x18\x01 \x03(\x0b\x32\x1d.mandiant.capa.FunctionLayout\"H\n\x0fLibraryFunction\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\x12\x0c\n\x04name\x18\x02 \x01(\t\"Y\n\x07MBCSpec\x12\r\n\x05parts\x18\x01 \x03(\t\x12\x11\n\tobjective\x18\x02 \x01(\t\x12\x10\n\x08\x62\x65havior\x18\x03 \x01(\t\x12\x0e\n\x06method\x18\x04 \x01(\t\x12\n\n\x02id\x18\x05 \x01(\t\"\x9a\x01\n\x0cMaecMetadata\x12\x1b\n\x13\x61nalysis_conclusion\x18\x01 \x01(\t\x12\x1e\n\x16\x61nalysis_conclusion_ov\x18\x02 \x01(\t\x12\x16\n\x0emalware_family\x18\x03 \x01(\t\x12\x18\n\x10malware_category\x18\x04 \x01(\t\x12\x1b\n\x13malware_category_ov\x18\x05 \x01(\t\"\xd6\x02\n\x05Match\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x31\n\tstatement\x18\x02 \x01(\x0b\x32\x1c.mandiant.capa.StatementNodeH\x00\x12-\n\x07\x66\x65\x61ture\x18\x03 \x01(\x0b\x32\x1a.mandiant.capa.FeatureNodeH\x00\x12&\n\x08\x63hildren\x18\x05 \x03(\x0b\x32\x14.mandiant.capa.Match\x12)\n\tlocations\x18\x06 \x03(\x0b\x32\x16.mandiant.capa.Address\x12\x34\n\x08\x63\x61ptures\x18\x07 \x03(\x0b\x32\".mandiant.capa.Match.CapturesEntry\x1aI\n\rCapturesEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\'\n\x05value\x18\x02 \x01(\x0b\x32\x18.mandiant.capa.Addresses:\x02\x38\x01\x42\x06\n\x04node\"U\n\x0cMatchFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05match\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"\xbc\x02\n\x08Metadata\x12\x11\n\ttimestamp\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\x12\x0c\n\x04\x61rgv\x18\x03 \x03(\t\x12%\n\x06sample\x18\x04 \x01(\x0b\x32\x15.mandiant.capa.Sample\x12-\n\x08\x61nalysis\x18\x05 \x01(\x0b\x32\x17.mandiant.capa.AnalysisB\x02\x18\x01\x12%\n\x06\x66lavor\x18\x06 \x01(\x0e\x32\x15.mandiant.capa.Flavor\x12\x38\n\x0fstatic_analysis\x18\x07 \x01(\x0b\x32\x1d.mandiant.capa.StaticAnalysisH\x00\x12:\n\x10\x64ynamic_analysis\x18\x08 \x01(\x0b\x32\x1e.mandiant.capa.DynamicAnalysisH\x00\x42\x0b\n\tanalysis2\"[\n\x0fMnemonicFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x10\n\x08mnemonic\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"]\n\x10NamespaceFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x11\n\tnamespace\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"n\n\rNumberFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12%\n\x06number\x18\x02 \x01(\x0b\x32\x15.mandiant.capa.Number\x12\x18\n\x0b\x64\x65scription\x18\x05 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"O\n\tOSFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\n\n\x02os\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"o\n\rOffsetFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12&\n\x06offset\x18\x02 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"\x8d\x01\n\x14OperandNumberFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05index\x18\x02 \x01(\r\x12.\n\x0eoperand_number\x18\x03 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12\x18\n\x0b\x64\x65scription\x18\x04 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"\x8d\x01\n\x14OperandOffsetFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05index\x18\x02 \x01(\r\x12.\n\x0eoperand_offset\x18\x03 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12\x18\n\x0b\x64\x65scription\x18\x04 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"M\n\x13ProcessFeatureCount\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\x12\r\n\x05\x63ount\x18\x02 \x01(\x04\"|\n\rProcessLayout\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\x12\x34\n\x0fmatched_threads\x18\x02 \x03(\x0b\x32\x1b.mandiant.capa.ThreadLayout\x12\x0c\n\x04name\x18\x03 \x01(\t\"|\n\x0fPropertyFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x11\n\tproperty_\x18\x02 \x01(\t\x12\x13\n\x06\x61\x63\x63\x65ss\x18\x03 \x01(\tH\x00\x88\x01\x01\x12\x18\n\x0b\x64\x65scription\x18\x04 \x01(\tH\x01\x88\x01\x01\x42\t\n\x07_accessB\x0e\n\x0c_description\"\x8d\x01\n\x0eRangeStatement\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0b\n\x03min\x18\x02 \x01(\x04\x12\x0b\n\x03max\x18\x03 \x01(\x04\x12)\n\x05\x63hild\x18\x04 \x01(\x0b\x32\x1a.mandiant.capa.FeatureNode\x12\x18\n\x0b\x64\x65scription\x18\x05 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"U\n\x0cRegexFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05regex\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"\xba\x01\n\x0eResultDocument\x12%\n\x04meta\x18\x01 \x01(\x0b\x32\x17.mandiant.capa.Metadata\x12\x37\n\x05rules\x18\x02 \x03(\x0b\x32(.mandiant.capa.ResultDocument.RulesEntry\x1aH\n\nRulesEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12)\n\x05value\x18\x02 \x01(\x0b\x32\x1a.mandiant.capa.RuleMatches:\x02\x38\x01\"|\n\x0bRuleMatches\x12)\n\x04meta\x18\x01 \x01(\x0b\x32\x1b.mandiant.capa.RuleMetadata\x12\x0e\n\x06source\x18\x02 \x01(\t\x12\x32\n\x07matches\x18\x03 \x03(\x0b\x32!.mandiant.capa.Pair_Address_Match\"\xed\x02\n\x0cRuleMetadata\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x11\n\tnamespace\x18\x02 \x01(\t\x12\x0f\n\x07\x61uthors\x18\x03 \x03(\t\x12\'\n\x05scope\x18\x04 \x01(\x0e\x32\x14.mandiant.capa.ScopeB\x02\x18\x01\x12)\n\x06\x61ttack\x18\x05 \x03(\x0b\x32\x19.mandiant.capa.AttackSpec\x12#\n\x03mbc\x18\x06 \x03(\x0b\x32\x16.mandiant.capa.MBCSpec\x12\x12\n\nreferences\x18\x07 \x03(\t\x12\x10\n\x08\x65xamples\x18\x08 \x03(\t\x12\x13\n\x0b\x64\x65scription\x18\t \x01(\t\x12\x0b\n\x03lib\x18\n \x01(\x08\x12)\n\x04maec\x18\x0b \x01(\x0b\x32\x1b.mandiant.capa.MaecMetadata\x12\x18\n\x10is_subscope_rule\x18\x0c \x01(\x08\x12%\n\x06scopes\x18\r \x01(\x0b\x32\x15.mandiant.capa.Scopes\"A\n\x06Sample\x12\x0b\n\x03md5\x18\x01 \x01(\t\x12\x0c\n\x04sha1\x18\x02 \x01(\t\x12\x0e\n\x06sha256\x18\x03 \x01(\t\x12\x0c\n\x04path\x18\x04 \x01(\t\"v\n\x06Scopes\x12)\n\x06static\x18\x01 \x01(\x0e\x32\x14.mandiant.capa.ScopeH\x00\x88\x01\x01\x12*\n\x07\x64ynamic\x18\x02 \x01(\x0e\x32\x14.mandiant.capa.ScopeH\x01\x88\x01\x01\x42\t\n\x07_staticB\n\n\x08_dynamic\"Y\n\x0eSectionFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0f\n\x07section\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"V\n\rSomeStatement\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05\x63ount\x18\x02 \x01(\r\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"\xf4\x01\n\rStatementNode\x12\x0c\n\x04type\x18\x01 \x01(\t\x12.\n\x05range\x18\x02 \x01(\x0b\x32\x1d.mandiant.capa.RangeStatementH\x00\x12,\n\x04some\x18\x03 \x01(\x0b\x32\x1c.mandiant.capa.SomeStatementH\x00\x12\x34\n\x08subscope\x18\x04 \x01(\x0b\x32 .mandiant.capa.SubscopeStatementH\x00\x12\x34\n\x08\x63ompound\x18\x05 \x01(\x0b\x32 .mandiant.capa.CompoundStatementH\x00\x42\x0b\n\tstatement\"\xae\x02\n\x0eStaticAnalysis\x12\x0e\n\x06\x66ormat\x18\x01 \x01(\t\x12\x0c\n\x04\x61rch\x18\x02 \x01(\t\x12\n\n\x02os\x18\x03 \x01(\t\x12\x11\n\textractor\x18\x04 \x01(\t\x12\r\n\x05rules\x18\x05 \x03(\t\x12,\n\x0c\x62\x61se_address\x18\x06 \x01(\x0b\x32\x16.mandiant.capa.Address\x12+\n\x06layout\x18\x07 \x01(\x0b\x32\x1b.mandiant.capa.StaticLayout\x12:\n\x0e\x66\x65\x61ture_counts\x18\x08 \x01(\x0b\x32\".mandiant.capa.StaticFeatureCounts\x12\x39\n\x11library_functions\x18\t \x03(\x0b\x32\x1e.mandiant.capa.LibraryFunction\"[\n\x13StaticFeatureCounts\x12\x0c\n\x04\x66ile\x18\x01 \x01(\x04\x12\x36\n\tfunctions\x18\x02 \x03(\x0b\x32#.mandiant.capa.FunctionFeatureCount\"@\n\x0cStaticLayout\x12\x30\n\tfunctions\x18\x01 \x03(\x0b\x32\x1d.mandiant.capa.FunctionLayout\"W\n\rStringFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0e\n\x06string\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"p\n\x11SubscopeStatement\x12\x0c\n\x04type\x18\x01 \x01(\t\x12#\n\x05scope\x18\x02 \x01(\x0e\x32\x14.mandiant.capa.Scope\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"]\n\x10SubstringFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x11\n\tsubstring\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"C\n\nCallLayout\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\x12\x0c\n\x04name\x18\x02 \x01(\t\"i\n\x0cThreadLayout\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\x12\x30\n\rmatched_calls\x18\x02 \x03(\x0b\x32\x19.mandiant.capa.CallLayout\"4\n\tAddresses\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x03(\x0b\x32\x16.mandiant.capa.Address\"b\n\x12Pair_Address_Match\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\x12#\n\x05match\x18\x02 \x01(\x0b\x32\x14.mandiant.capa.Match\"E\n\x0cToken_Offset\x12%\n\x05token\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12\x0e\n\x06offset\x18\x02 \x01(\x04\"U\n\x08Ppid_Pid\x12$\n\x04ppid\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12#\n\x03pid\x18\x02 \x01(\x0b\x32\x16.mandiant.capa.Integer\"~\n\x0cPpid_Pid_Tid\x12$\n\x04ppid\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12#\n\x03pid\x18\x02 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12#\n\x03tid\x18\x03 \x01(\x0b\x32\x16.mandiant.capa.Integer\"\xa5\x01\n\x0fPpid_Pid_Tid_Id\x12$\n\x04ppid\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12#\n\x03pid\x18\x02 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12#\n\x03tid\x18\x03 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12\"\n\x02id\x18\x04 \x01(\x0b\x32\x16.mandiant.capa.Integer\",\n\x07Integer\x12\x0b\n\x01u\x18\x01 \x01(\x04H\x00\x12\x0b\n\x01i\x18\x02 \x01(\x12H\x00\x42\x07\n\x05value\"8\n\x06Number\x12\x0b\n\x01u\x18\x01 \x01(\x04H\x00\x12\x0b\n\x01i\x18\x02 \x01(\x12H\x00\x12\x0b\n\x01\x66\x18\x03 \x01(\x01H\x00\x42\x07\n\x05value*\x92\x02\n\x0b\x41\x64\x64ressType\x12\x1b\n\x17\x41\x44\x44RESSTYPE_UNSPECIFIED\x10\x00\x12\x18\n\x14\x41\x44\x44RESSTYPE_ABSOLUTE\x10\x01\x12\x18\n\x14\x41\x44\x44RESSTYPE_RELATIVE\x10\x02\x12\x14\n\x10\x41\x44\x44RESSTYPE_FILE\x10\x03\x12\x18\n\x14\x41\x44\x44RESSTYPE_DN_TOKEN\x10\x04\x12\x1f\n\x1b\x41\x44\x44RESSTYPE_DN_TOKEN_OFFSET\x10\x05\x12\x1a\n\x16\x41\x44\x44RESSTYPE_NO_ADDRESS\x10\x06\x12\x17\n\x13\x41\x44\x44RESSTYPE_PROCESS\x10\x07\x12\x16\n\x12\x41\x44\x44RESSTYPE_THREAD\x10\x08\x12\x14\n\x10\x41\x44\x44RESSTYPE_CALL\x10\t*G\n\x06\x46lavor\x12\x16\n\x12\x46LAVOR_UNSPECIFIED\x10\x00\x12\x11\n\rFLAVOR_STATIC\x10\x01\x12\x12\n\x0e\x46LAVOR_DYNAMIC\x10\x02*\xbe\x01\n\x05Scope\x12\x15\n\x11SCOPE_UNSPECIFIED\x10\x00\x12\x0e\n\nSCOPE_FILE\x10\x01\x12\x12\n\x0eSCOPE_FUNCTION\x10\x02\x12\x15\n\x11SCOPE_BASIC_BLOCK\x10\x03\x12\x15\n\x11SCOPE_INSTRUCTION\x10\x04\x12\x11\n\rSCOPE_PROCESS\x10\x05\x12\x10\n\x0cSCOPE_THREAD\x10\x06\x12\x0e\n\nSCOPE_CALL\x10\x07\x12\x17\n\x13SCOPE_SPAN_OF_CALLS\x10\x08\x62\x06proto3')
++DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1c\x63\x61pa/render/proto/capa.proto\x12\rmandiant.capa\"Q\n\nAPIFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0b\n\x03\x61pi\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"\xb3\x02\n\x07\x41\x64\x64ress\x12(\n\x04type\x18\x01 \x01(\x0e\x32\x1a.mandiant.capa.AddressType\x12#\n\x01v\x18\x02 \x01(\x0b\x32\x16.mandiant.capa.IntegerH\x00\x12\x33\n\x0ctoken_offset\x18\x03 \x01(\x0b\x32\x1b.mandiant.capa.Token_OffsetH\x00\x12+\n\x08ppid_pid\x18\x04 \x01(\x0b\x32\x17.mandiant.capa.Ppid_PidH\x00\x12\x33\n\x0cppid_pid_tid\x18\x05 \x01(\x0b\x32\x1b.mandiant.capa.Ppid_Pid_TidH\x00\x12\x39\n\x0fppid_pid_tid_id\x18\x06 \x01(\x0b\x32\x1e.mandiant.capa.Ppid_Pid_Tid_IdH\x00\x42\x07\n\x05value\"\x9c\x02\n\x08\x41nalysis\x12\x0e\n\x06\x66ormat\x18\x01 \x01(\t\x12\x0c\n\x04\x61rch\x18\x02 \x01(\t\x12\n\n\x02os\x18\x03 \x01(\t\x12\x11\n\textractor\x18\x04 \x01(\t\x12\r\n\x05rules\x18\x05 \x03(\t\x12,\n\x0c\x62\x61se_address\x18\x06 \x01(\x0b\x32\x16.mandiant.capa.Address\x12%\n\x06layout\x18\x07 \x01(\x0b\x32\x15.mandiant.capa.Layout\x12\x34\n\x0e\x66\x65\x61ture_counts\x18\x08 \x01(\x0b\x32\x1c.mandiant.capa.FeatureCounts\x12\x39\n\x11library_functions\x18\t \x03(\x0b\x32\x1e.mandiant.capa.LibraryFunction\"S\n\x0b\x41rchFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0c\n\x04\x61rch\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"`\n\nAttackSpec\x12\r\n\x05parts\x18\x01 \x03(\t\x12\x0e\n\x06tactic\x18\x02 \x01(\t\x12\x11\n\ttechnique\x18\x03 \x01(\t\x12\x14\n\x0csubtechnique\x18\x04 \x01(\t\x12\n\n\x02id\x18\x05 \x01(\t\"K\n\x11\x42\x61sicBlockFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x02 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\";\n\x10\x42\x61sicBlockLayout\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\"U\n\x0c\x42ytesFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05\x62ytes\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"g\n\x15\x43haracteristicFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x16\n\x0e\x63haracteristic\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"V\n\x0c\x43lassFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0e\n\x06\x63lass_\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"K\n\x11\x43ompoundStatement\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x02 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"\xc8\x01\n\x0f\x44ynamicAnalysis\x12\x0e\n\x06\x66ormat\x18\x01 \x01(\t\x12\x0c\n\x04\x61rch\x18\x02 \x01(\t\x12\n\n\x02os\x18\x03 \x01(\t\x12\x11\n\textractor\x18\x04 \x01(\t\x12\r\n\x05rules\x18\x05 \x03(\t\x12,\n\x06layout\x18\x06 \x01(\x0b\x32\x1c.mandiant.capa.DynamicLayout\x12;\n\x0e\x66\x65\x61ture_counts\x18\x07 \x01(\x0b\x32#.mandiant.capa.DynamicFeatureCounts\"[\n\x14\x44ynamicFeatureCounts\x12\x0c\n\x04\x66ile\x18\x01 \x01(\x04\x12\x35\n\tprocesses\x18\x02 \x03(\x0b\x32\".mandiant.capa.ProcessFeatureCount\"@\n\rDynamicLayout\x12/\n\tprocesses\x18\x01 \x03(\x0b\x32\x1c.mandiant.capa.ProcessLayout\"W\n\rExportFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0e\n\x06\x65xport\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"U\n\rFeatureCounts\x12\x0c\n\x04\x66ile\x18\x01 \x01(\x04\x12\x36\n\tfunctions\x18\x02 \x03(\x0b\x32#.mandiant.capa.FunctionFeatureCount\"\xf6\n\n\x0b\x46\x65\x61tureNode\x12\x0c\n\x04type\x18\x01 \x01(\t\x12&\n\x02os\x18\x02 \x01(\x0b\x32\x18.mandiant.capa.OSFeatureH\x00\x12*\n\x04\x61rch\x18\x03 \x01(\x0b\x32\x1a.mandiant.capa.ArchFeatureH\x00\x12.\n\x06\x66ormat\x18\x04 \x01(\x0b\x32\x1c.mandiant.capa.FormatFeatureH\x00\x12,\n\x05match\x18\x05 \x01(\x0b\x32\x1b.mandiant.capa.MatchFeatureH\x00\x12>\n\x0e\x63haracteristic\x18\x06 \x01(\x0b\x32$.mandiant.capa.CharacteristicFeatureH\x00\x12.\n\x06\x65xport\x18\x07 \x01(\x0b\x32\x1c.mandiant.capa.ExportFeatureH\x00\x12/\n\x07import_\x18\x08 \x01(\x0b\x32\x1c.mandiant.capa.ImportFeatureH\x00\x12\x30\n\x07section\x18\t \x01(\x0b\x32\x1d.mandiant.capa.SectionFeatureH\x00\x12;\n\rfunction_name\x18\n \x01(\x0b\x32\".mandiant.capa.FunctionNameFeatureH\x00\x12\x34\n\tsubstring\x18\x0b \x01(\x0b\x32\x1f.mandiant.capa.SubstringFeatureH\x00\x12,\n\x05regex\x18\x0c \x01(\x0b\x32\x1b.mandiant.capa.RegexFeatureH\x00\x12.\n\x06string\x18\r \x01(\x0b\x32\x1c.mandiant.capa.StringFeatureH\x00\x12-\n\x06\x63lass_\x18\x0e \x01(\x0b\x32\x1b.mandiant.capa.ClassFeatureH\x00\x12\x34\n\tnamespace\x18\x0f \x01(\x0b\x32\x1f.mandiant.capa.NamespaceFeatureH\x00\x12(\n\x03\x61pi\x18\x10 \x01(\x0b\x32\x19.mandiant.capa.APIFeatureH\x00\x12\x33\n\tproperty_\x18\x11 \x01(\x0b\x32\x1e.mandiant.capa.PropertyFeatureH\x00\x12.\n\x06number\x18\x12 \x01(\x0b\x32\x1c.mandiant.capa.NumberFeatureH\x00\x12,\n\x05\x62ytes\x18\x13 \x01(\x0b\x32\x1b.mandiant.capa.BytesFeatureH\x00\x12.\n\x06offset\x18\x14 \x01(\x0b\x32\x1c.mandiant.capa.OffsetFeatureH\x00\x12\x32\n\x08mnemonic\x18\x15 \x01(\x0b\x32\x1e.mandiant.capa.MnemonicFeatureH\x00\x12=\n\x0eoperand_number\x18\x16 \x01(\x0b\x32#.mandiant.capa.OperandNumberFeatureH\x00\x12=\n\x0eoperand_offset\x18\x17 \x01(\x0b\x32#.mandiant.capa.OperandOffsetFeatureH\x00\x12\x37\n\x0b\x62\x61sic_block\x18\x18 \x01(\x0b\x32 .mandiant.capa.BasicBlockFeatureH\x00\x12\x37\n\x0bscript_call\x18\x19 \x01(\x0b\x32 .mandiant.capa.ScriptCallFeatureH\x00\x12?\n\x0fscript_variable\x18\x1a \x01(\x0b\x32$.mandiant.capa.ScriptVariableFeatureH\x00\x12\x41\n\x10script_structure\x18\x1b \x01(\x0b\x32%.mandiant.capa.ScriptStructureFeatureH\x00\x42\t\n\x07\x66\x65\x61ture\"`\n\x11ScriptCallFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x13\n\x0bscript_call\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"x\n\x15ScriptVariableFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x17\n\x0fscript_variable\x18\x02 \x01(\t\x12\x0e\n\x06\x61\x63\x63\x65ss\x18\x03 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x04 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"j\n\x16ScriptStructureFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x18\n\x10script_structure\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"W\n\rFormatFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0e\n\x06\x66ormat\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"N\n\x14\x46unctionFeatureCount\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\x12\r\n\x05\x63ount\x18\x02 \x01(\x04\"\xac\x01\n\x0e\x46unctionLayout\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\x12=\n\x14matched_basic_blocks\x18\x02 \x03(\x0b\x32\x1f.mandiant.capa.BasicBlockLayout\x12\x32\n\x12matched_statements\x18\x03 \x03(\x0b\x32\x16.mandiant.capa.Address\"d\n\x13\x46unctionNameFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x15\n\rfunction_name\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"X\n\rImportFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0f\n\x07import_\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\":\n\x06Layout\x12\x30\n\tfunctions\x18\x01 \x03(\x0b\x32\x1d.mandiant.capa.FunctionLayout\"H\n\x0fLibraryFunction\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\x12\x0c\n\x04name\x18\x02 \x01(\t\"Y\n\x07MBCSpec\x12\r\n\x05parts\x18\x01 \x03(\t\x12\x11\n\tobjective\x18\x02 \x01(\t\x12\x10\n\x08\x62\x65havior\x18\x03 \x01(\t\x12\x0e\n\x06method\x18\x04 \x01(\t\x12\n\n\x02id\x18\x05 \x01(\t\"\x9a\x01\n\x0cMaecMetadata\x12\x1b\n\x13\x61nalysis_conclusion\x18\x01 \x01(\t\x12\x1e\n\x16\x61nalysis_conclusion_ov\x18\x02 \x01(\t\x12\x16\n\x0emalware_family\x18\x03 \x01(\t\x12\x18\n\x10malware_category\x18\x04 \x01(\t\x12\x1b\n\x13malware_category_ov\x18\x05 \x01(\t\"\xd6\x02\n\x05Match\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x31\n\tstatement\x18\x02 \x01(\x0b\x32\x1c.mandiant.capa.StatementNodeH\x00\x12-\n\x07\x66\x65\x61ture\x18\x03 \x01(\x0b\x32\x1a.mandiant.capa.FeatureNodeH\x00\x12&\n\x08\x63hildren\x18\x05 \x03(\x0b\x32\x14.mandiant.capa.Match\x12)\n\tlocations\x18\x06 \x03(\x0b\x32\x16.mandiant.capa.Address\x12\x34\n\x08\x63\x61ptures\x18\x07 \x03(\x0b\x32\".mandiant.capa.Match.CapturesEntry\x1aI\n\rCapturesEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\'\n\x05value\x18\x02 \x01(\x0b\x32\x18.mandiant.capa.Addresses:\x02\x38\x01\x42\x06\n\x04node\"U\n\x0cMatchFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05match\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"\xbc\x02\n\x08Metadata\x12\x11\n\ttimestamp\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\x12\x0c\n\x04\x61rgv\x18\x03 \x03(\t\x12%\n\x06sample\x18\x04 \x01(\x0b\x32\x15.mandiant.capa.Sample\x12-\n\x08\x61nalysis\x18\x05 \x01(\x0b\x32\x17.mandiant.capa.AnalysisB\x02\x18\x01\x12%\n\x06\x66lavor\x18\x06 \x01(\x0e\x32\x15.mandiant.capa.Flavor\x12\x38\n\x0fstatic_analysis\x18\x07 \x01(\x0b\x32\x1d.mandiant.capa.StaticAnalysisH\x00\x12:\n\x10\x64ynamic_analysis\x18\x08 \x01(\x0b\x32\x1e.mandiant.capa.DynamicAnalysisH\x00\x42\x0b\n\tanalysis2\"[\n\x0fMnemonicFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x10\n\x08mnemonic\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"]\n\x10NamespaceFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x11\n\tnamespace\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"n\n\rNumberFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12%\n\x06number\x18\x02 \x01(\x0b\x32\x15.mandiant.capa.Number\x12\x18\n\x0b\x64\x65scription\x18\x05 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"O\n\tOSFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\n\n\x02os\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"o\n\rOffsetFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12&\n\x06offset\x18\x02 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"\x8d\x01\n\x14OperandNumberFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05index\x18\x02 \x01(\r\x12.\n\x0eoperand_number\x18\x03 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12\x18\n\x0b\x64\x65scription\x18\x04 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"\x8d\x01\n\x14OperandOffsetFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05index\x18\x02 \x01(\r\x12.\n\x0eoperand_offset\x18\x03 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12\x18\n\x0b\x64\x65scription\x18\x04 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"M\n\x13ProcessFeatureCount\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\x12\r\n\x05\x63ount\x18\x02 \x01(\x04\"|\n\rProcessLayout\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\x12\x34\n\x0fmatched_threads\x18\x02 \x03(\x0b\x32\x1b.mandiant.capa.ThreadLayout\x12\x0c\n\x04name\x18\x03 \x01(\t\"|\n\x0fPropertyFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x11\n\tproperty_\x18\x02 \x01(\t\x12\x13\n\x06\x61\x63\x63\x65ss\x18\x03 \x01(\tH\x00\x88\x01\x01\x12\x18\n\x0b\x64\x65scription\x18\x04 \x01(\tH\x01\x88\x01\x01\x42\t\n\x07_accessB\x0e\n\x0c_description\"\x8d\x01\n\x0eRangeStatement\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0b\n\x03min\x18\x02 \x01(\x04\x12\x0b\n\x03max\x18\x03 \x01(\x04\x12)\n\x05\x63hild\x18\x04 \x01(\x0b\x32\x1a.mandiant.capa.FeatureNode\x12\x18\n\x0b\x64\x65scription\x18\x05 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"U\n\x0cRegexFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05regex\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"\xba\x01\n\x0eResultDocument\x12%\n\x04meta\x18\x01 \x01(\x0b\x32\x17.mandiant.capa.Metadata\x12\x37\n\x05rules\x18\x02 \x03(\x0b\x32(.mandiant.capa.ResultDocument.RulesEntry\x1aH\n\nRulesEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12)\n\x05value\x18\x02 \x01(\x0b\x32\x1a.mandiant.capa.RuleMatches:\x02\x38\x01\"|\n\x0bRuleMatches\x12)\n\x04meta\x18\x01 \x01(\x0b\x32\x1b.mandiant.capa.RuleMetadata\x12\x0e\n\x06source\x18\x02 \x01(\t\x12\x32\n\x07matches\x18\x03 \x03(\x0b\x32!.mandiant.capa.Pair_Address_Match\"\xed\x02\n\x0cRuleMetadata\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x11\n\tnamespace\x18\x02 \x01(\t\x12\x0f\n\x07\x61uthors\x18\x03 \x03(\t\x12\'\n\x05scope\x18\x04 \x01(\x0e\x32\x14.mandiant.capa.ScopeB\x02\x18\x01\x12)\n\x06\x61ttack\x18\x05 \x03(\x0b\x32\x19.mandiant.capa.AttackSpec\x12#\n\x03mbc\x18\x06 \x03(\x0b\x32\x16.mandiant.capa.MBCSpec\x12\x12\n\nreferences\x18\x07 \x03(\t\x12\x10\n\x08\x65xamples\x18\x08 \x03(\t\x12\x13\n\x0b\x64\x65scription\x18\t \x01(\t\x12\x0b\n\x03lib\x18\n \x01(\x08\x12)\n\x04maec\x18\x0b \x01(\x0b\x32\x1b.mandiant.capa.MaecMetadata\x12\x18\n\x10is_subscope_rule\x18\x0c \x01(\x08\x12%\n\x06scopes\x18\r \x01(\x0b\x32\x15.mandiant.capa.Scopes\"A\n\x06Sample\x12\x0b\n\x03md5\x18\x01 \x01(\t\x12\x0c\n\x04sha1\x18\x02 \x01(\t\x12\x0e\n\x06sha256\x18\x03 \x01(\t\x12\x0c\n\x04path\x18\x04 \x01(\t\"v\n\x06Scopes\x12)\n\x06static\x18\x01 \x01(\x0e\x32\x14.mandiant.capa.ScopeH\x00\x88\x01\x01\x12*\n\x07\x64ynamic\x18\x02 \x01(\x0e\x32\x14.mandiant.capa.ScopeH\x01\x88\x01\x01\x42\t\n\x07_staticB\n\n\x08_dynamic\"Y\n\x0eSectionFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0f\n\x07section\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"V\n\rSomeStatement\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05\x63ount\x18\x02 \x01(\r\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"\xf4\x01\n\rStatementNode\x12\x0c\n\x04type\x18\x01 \x01(\t\x12.\n\x05range\x18\x02 \x01(\x0b\x32\x1d.mandiant.capa.RangeStatementH\x00\x12,\n\x04some\x18\x03 \x01(\x0b\x32\x1c.mandiant.capa.SomeStatementH\x00\x12\x34\n\x08subscope\x18\x04 \x01(\x0b\x32 .mandiant.capa.SubscopeStatementH\x00\x12\x34\n\x08\x63ompound\x18\x05 \x01(\x0b\x32 .mandiant.capa.CompoundStatementH\x00\x42\x0b\n\tstatement\"\xd8\x02\n\x0eStaticAnalysis\x12\x0e\n\x06\x66ormat\x18\x01 \x01(\t\x12\x0c\n\x04\x61rch\x18\x02 \x01(\t\x12\n\n\x02os\x18\x03 \x01(\t\x12\x11\n\textractor\x18\x04 \x01(\t\x12\r\n\x05rules\x18\x05 \x03(\t\x12,\n\x0c\x62\x61se_address\x18\x06 \x01(\x0b\x32\x16.mandiant.capa.Address\x12+\n\x06layout\x18\x07 \x01(\x0b\x32\x1b.mandiant.capa.StaticLayout\x12:\n\x0e\x66\x65\x61ture_counts\x18\x08 \x01(\x0b\x32\".mandiant.capa.StaticFeatureCounts\x12\x39\n\x11library_functions\x18\t \x03(\x0b\x32\x1e.mandiant.capa.LibraryFunction\x12\x18\n\x0bscript_json\x18\n \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_script_json\"[\n\x13StaticFeatureCounts\x12\x0c\n\x04\x66ile\x18\x01 \x01(\x04\x12\x36\n\tfunctions\x18\x02 \x03(\x0b\x32#.mandiant.capa.FunctionFeatureCount\"@\n\x0cStaticLayout\x12\x30\n\tfunctions\x18\x01 \x03(\x0b\x32\x1d.mandiant.capa.FunctionLayout\"W\n\rStringFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0e\n\x06string\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"p\n\x11SubscopeStatement\x12\x0c\n\x04type\x18\x01 \x01(\t\x12#\n\x05scope\x18\x02 \x01(\x0e\x32\x14.mandiant.capa.Scope\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"]\n\x10SubstringFeature\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x11\n\tsubstring\x18\x02 \x01(\t\x12\x18\n\x0b\x64\x65scription\x18\x03 \x01(\tH\x00\x88\x01\x01\x42\x0e\n\x0c_description\"C\n\nCallLayout\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\x12\x0c\n\x04name\x18\x02 \x01(\t\"i\n\x0cThreadLayout\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\x12\x30\n\rmatched_calls\x18\x02 \x03(\x0b\x32\x19.mandiant.capa.CallLayout\"4\n\tAddresses\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x03(\x0b\x32\x16.mandiant.capa.Address\"b\n\x12Pair_Address_Match\x12\'\n\x07\x61\x64\x64ress\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Address\x12#\n\x05match\x18\x02 \x01(\x0b\x32\x14.mandiant.capa.Match\"E\n\x0cToken_Offset\x12%\n\x05token\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12\x0e\n\x06offset\x18\x02 \x01(\x04\"U\n\x08Ppid_Pid\x12$\n\x04ppid\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12#\n\x03pid\x18\x02 \x01(\x0b\x32\x16.mandiant.capa.Integer\"~\n\x0cPpid_Pid_Tid\x12$\n\x04ppid\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12#\n\x03pid\x18\x02 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12#\n\x03tid\x18\x03 \x01(\x0b\x32\x16.mandiant.capa.Integer\"\xa5\x01\n\x0fPpid_Pid_Tid_Id\x12$\n\x04ppid\x18\x01 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12#\n\x03pid\x18\x02 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12#\n\x03tid\x18\x03 \x01(\x0b\x32\x16.mandiant.capa.Integer\x12\"\n\x02id\x18\x04 \x01(\x0b\x32\x16.mandiant.capa.Integer\",\n\x07Integer\x12\x0b\n\x01u\x18\x01 \x01(\x04H\x00\x12\x0b\n\x01i\x18\x02 \x01(\x12H\x00\x42\x07\n\x05value\"8\n\x06Number\x12\x0b\n\x01u\x18\x01 \x01(\x04H\x00\x12\x0b\n\x01i\x18\x02 \x01(\x12H\x00\x12\x0b\n\x01\x66\x18\x03 \x01(\x01H\x00\x42\x07\n\x05value*\x92\x02\n\x0b\x41\x64\x64ressType\x12\x1b\n\x17\x41\x44\x44RESSTYPE_UNSPECIFIED\x10\x00\x12\x18\n\x14\x41\x44\x44RESSTYPE_ABSOLUTE\x10\x01\x12\x18\n\x14\x41\x44\x44RESSTYPE_RELATIVE\x10\x02\x12\x14\n\x10\x41\x44\x44RESSTYPE_FILE\x10\x03\x12\x18\n\x14\x41\x44\x44RESSTYPE_DN_TOKEN\x10\x04\x12\x1f\n\x1b\x41\x44\x44RESSTYPE_DN_TOKEN_OFFSET\x10\x05\x12\x1a\n\x16\x41\x44\x44RESSTYPE_NO_ADDRESS\x10\x06\x12\x17\n\x13\x41\x44\x44RESSTYPE_PROCESS\x10\x07\x12\x16\n\x12\x41\x44\x44RESSTYPE_THREAD\x10\x08\x12\x14\n\x10\x41\x44\x44RESSTYPE_CALL\x10\t*G\n\x06\x46lavor\x12\x16\n\x12\x46LAVOR_UNSPECIFIED\x10\x00\x12\x11\n\rFLAVOR_STATIC\x10\x01\x12\x12\n\x0e\x46LAVOR_DYNAMIC\x10\x02*\xd3\x01\n\x05Scope\x12\x15\n\x11SCOPE_UNSPECIFIED\x10\x00\x12\x0e\n\nSCOPE_FILE\x10\x01\x12\x12\n\x0eSCOPE_FUNCTION\x10\x02\x12\x15\n\x11SCOPE_BASIC_BLOCK\x10\x03\x12\x15\n\x11SCOPE_INSTRUCTION\x10\x04\x12\x11\n\rSCOPE_PROCESS\x10\x05\x12\x10\n\x0cSCOPE_THREAD\x10\x06\x12\x0e\n\nSCOPE_CALL\x10\x07\x12\x17\n\x13SCOPE_SPAN_OF_CALLS\x10\x08\x12\x13\n\x0fSCOPE_STATEMENT\x10\tb\x06proto3')
+ 
+ _globals = globals()
+ _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
+@@ -39,12 +39,12 @@ if not _descriptor._USE_C_DESCRIPTORS:
+   _globals['_RESULTDOCUMENT_RULESENTRY']._serialized_options = b'8\001'
+   _globals['_RULEMETADATA'].fields_by_name['scope']._loaded_options = None
+   _globals['_RULEMETADATA'].fields_by_name['scope']._serialized_options = b'\030\001'
+-  _globals['_ADDRESSTYPE']._serialized_start=9062
+-  _globals['_ADDRESSTYPE']._serialized_end=9336
+-  _globals['_FLAVOR']._serialized_start=9338
+-  _globals['_FLAVOR']._serialized_end=9409
+-  _globals['_SCOPE']._serialized_start=9412
+-  _globals['_SCOPE']._serialized_end=9602
++  _globals['_ADDRESSTYPE']._serialized_start=9674
++  _globals['_ADDRESSTYPE']._serialized_end=9948
++  _globals['_FLAVOR']._serialized_start=9950
++  _globals['_FLAVOR']._serialized_end=10021
++  _globals['_SCOPE']._serialized_start=10024
++  _globals['_SCOPE']._serialized_end=10235
+   _globals['_APIFEATURE']._serialized_start=47
+   _globals['_APIFEATURE']._serialized_end=128
+   _globals['_ADDRESS']._serialized_start=131
+@@ -78,105 +78,111 @@ if not _descriptor._USE_C_DESCRIPTORS:
+   _globals['_FEATURECOUNTS']._serialized_start=1856
+   _globals['_FEATURECOUNTS']._serialized_end=1941
+   _globals['_FEATURENODE']._serialized_start=1944
+-  _globals['_FEATURENODE']._serialized_end=3153
+-  _globals['_FORMATFEATURE']._serialized_start=3155
+-  _globals['_FORMATFEATURE']._serialized_end=3242
+-  _globals['_FUNCTIONFEATURECOUNT']._serialized_start=3244
+-  _globals['_FUNCTIONFEATURECOUNT']._serialized_end=3322
+-  _globals['_FUNCTIONLAYOUT']._serialized_start=3324
+-  _globals['_FUNCTIONLAYOUT']._serialized_end=3444
+-  _globals['_FUNCTIONNAMEFEATURE']._serialized_start=3446
+-  _globals['_FUNCTIONNAMEFEATURE']._serialized_end=3546
+-  _globals['_IMPORTFEATURE']._serialized_start=3548
+-  _globals['_IMPORTFEATURE']._serialized_end=3636
+-  _globals['_LAYOUT']._serialized_start=3638
+-  _globals['_LAYOUT']._serialized_end=3696
+-  _globals['_LIBRARYFUNCTION']._serialized_start=3698
+-  _globals['_LIBRARYFUNCTION']._serialized_end=3770
+-  _globals['_MBCSPEC']._serialized_start=3772
+-  _globals['_MBCSPEC']._serialized_end=3861
+-  _globals['_MAECMETADATA']._serialized_start=3864
+-  _globals['_MAECMETADATA']._serialized_end=4018
+-  _globals['_MATCH']._serialized_start=4021
+-  _globals['_MATCH']._serialized_end=4363
+-  _globals['_MATCH_CAPTURESENTRY']._serialized_start=4282
+-  _globals['_MATCH_CAPTURESENTRY']._serialized_end=4355
+-  _globals['_MATCHFEATURE']._serialized_start=4365
+-  _globals['_MATCHFEATURE']._serialized_end=4450
+-  _globals['_METADATA']._serialized_start=4453
+-  _globals['_METADATA']._serialized_end=4769
+-  _globals['_MNEMONICFEATURE']._serialized_start=4771
+-  _globals['_MNEMONICFEATURE']._serialized_end=4862
+-  _globals['_NAMESPACEFEATURE']._serialized_start=4864
+-  _globals['_NAMESPACEFEATURE']._serialized_end=4957
+-  _globals['_NUMBERFEATURE']._serialized_start=4959
+-  _globals['_NUMBERFEATURE']._serialized_end=5069
+-  _globals['_OSFEATURE']._serialized_start=5071
+-  _globals['_OSFEATURE']._serialized_end=5150
+-  _globals['_OFFSETFEATURE']._serialized_start=5152
+-  _globals['_OFFSETFEATURE']._serialized_end=5263
+-  _globals['_OPERANDNUMBERFEATURE']._serialized_start=5266
+-  _globals['_OPERANDNUMBERFEATURE']._serialized_end=5407
+-  _globals['_OPERANDOFFSETFEATURE']._serialized_start=5410
+-  _globals['_OPERANDOFFSETFEATURE']._serialized_end=5551
+-  _globals['_PROCESSFEATURECOUNT']._serialized_start=5553
+-  _globals['_PROCESSFEATURECOUNT']._serialized_end=5630
+-  _globals['_PROCESSLAYOUT']._serialized_start=5632
+-  _globals['_PROCESSLAYOUT']._serialized_end=5756
+-  _globals['_PROPERTYFEATURE']._serialized_start=5758
+-  _globals['_PROPERTYFEATURE']._serialized_end=5882
+-  _globals['_RANGESTATEMENT']._serialized_start=5885
+-  _globals['_RANGESTATEMENT']._serialized_end=6026
+-  _globals['_REGEXFEATURE']._serialized_start=6028
+-  _globals['_REGEXFEATURE']._serialized_end=6113
+-  _globals['_RESULTDOCUMENT']._serialized_start=6116
+-  _globals['_RESULTDOCUMENT']._serialized_end=6302
+-  _globals['_RESULTDOCUMENT_RULESENTRY']._serialized_start=6230
+-  _globals['_RESULTDOCUMENT_RULESENTRY']._serialized_end=6302
+-  _globals['_RULEMATCHES']._serialized_start=6304
+-  _globals['_RULEMATCHES']._serialized_end=6428
+-  _globals['_RULEMETADATA']._serialized_start=6431
+-  _globals['_RULEMETADATA']._serialized_end=6796
+-  _globals['_SAMPLE']._serialized_start=6798
+-  _globals['_SAMPLE']._serialized_end=6863
+-  _globals['_SCOPES']._serialized_start=6865
+-  _globals['_SCOPES']._serialized_end=6983
+-  _globals['_SECTIONFEATURE']._serialized_start=6985
+-  _globals['_SECTIONFEATURE']._serialized_end=7074
+-  _globals['_SOMESTATEMENT']._serialized_start=7076
+-  _globals['_SOMESTATEMENT']._serialized_end=7162
+-  _globals['_STATEMENTNODE']._serialized_start=7165
+-  _globals['_STATEMENTNODE']._serialized_end=7409
+-  _globals['_STATICANALYSIS']._serialized_start=7412
+-  _globals['_STATICANALYSIS']._serialized_end=7714
+-  _globals['_STATICFEATURECOUNTS']._serialized_start=7716
+-  _globals['_STATICFEATURECOUNTS']._serialized_end=7807
+-  _globals['_STATICLAYOUT']._serialized_start=7809
+-  _globals['_STATICLAYOUT']._serialized_end=7873
+-  _globals['_STRINGFEATURE']._serialized_start=7875
+-  _globals['_STRINGFEATURE']._serialized_end=7962
+-  _globals['_SUBSCOPESTATEMENT']._serialized_start=7964
+-  _globals['_SUBSCOPESTATEMENT']._serialized_end=8076
+-  _globals['_SUBSTRINGFEATURE']._serialized_start=8078
+-  _globals['_SUBSTRINGFEATURE']._serialized_end=8171
+-  _globals['_CALLLAYOUT']._serialized_start=8173
+-  _globals['_CALLLAYOUT']._serialized_end=8240
+-  _globals['_THREADLAYOUT']._serialized_start=8242
+-  _globals['_THREADLAYOUT']._serialized_end=8347
+-  _globals['_ADDRESSES']._serialized_start=8349
+-  _globals['_ADDRESSES']._serialized_end=8401
+-  _globals['_PAIR_ADDRESS_MATCH']._serialized_start=8403
+-  _globals['_PAIR_ADDRESS_MATCH']._serialized_end=8501
+-  _globals['_TOKEN_OFFSET']._serialized_start=8503
+-  _globals['_TOKEN_OFFSET']._serialized_end=8572
+-  _globals['_PPID_PID']._serialized_start=8574
+-  _globals['_PPID_PID']._serialized_end=8659
+-  _globals['_PPID_PID_TID']._serialized_start=8661
+-  _globals['_PPID_PID_TID']._serialized_end=8787
+-  _globals['_PPID_PID_TID_ID']._serialized_start=8790
+-  _globals['_PPID_PID_TID_ID']._serialized_end=8955
+-  _globals['_INTEGER']._serialized_start=8957
+-  _globals['_INTEGER']._serialized_end=9001
+-  _globals['_NUMBER']._serialized_start=9003
+-  _globals['_NUMBER']._serialized_end=9059
++  _globals['_FEATURENODE']._serialized_end=3342
++  _globals['_SCRIPTCALLFEATURE']._serialized_start=3344
++  _globals['_SCRIPTCALLFEATURE']._serialized_end=3440
++  _globals['_SCRIPTVARIABLEFEATURE']._serialized_start=3442
++  _globals['_SCRIPTVARIABLEFEATURE']._serialized_end=3562
++  _globals['_SCRIPTSTRUCTUREFEATURE']._serialized_start=3564
++  _globals['_SCRIPTSTRUCTUREFEATURE']._serialized_end=3670
++  _globals['_FORMATFEATURE']._serialized_start=3672
++  _globals['_FORMATFEATURE']._serialized_end=3759
++  _globals['_FUNCTIONFEATURECOUNT']._serialized_start=3761
++  _globals['_FUNCTIONFEATURECOUNT']._serialized_end=3839
++  _globals['_FUNCTIONLAYOUT']._serialized_start=3842
++  _globals['_FUNCTIONLAYOUT']._serialized_end=4014
++  _globals['_FUNCTIONNAMEFEATURE']._serialized_start=4016
++  _globals['_FUNCTIONNAMEFEATURE']._serialized_end=4116
++  _globals['_IMPORTFEATURE']._serialized_start=4118
++  _globals['_IMPORTFEATURE']._serialized_end=4206
++  _globals['_LAYOUT']._serialized_start=4208
++  _globals['_LAYOUT']._serialized_end=4266
++  _globals['_LIBRARYFUNCTION']._serialized_start=4268
++  _globals['_LIBRARYFUNCTION']._serialized_end=4340
++  _globals['_MBCSPEC']._serialized_start=4342
++  _globals['_MBCSPEC']._serialized_end=4431
++  _globals['_MAECMETADATA']._serialized_start=4434
++  _globals['_MAECMETADATA']._serialized_end=4588
++  _globals['_MATCH']._serialized_start=4591
++  _globals['_MATCH']._serialized_end=4933
++  _globals['_MATCH_CAPTURESENTRY']._serialized_start=4852
++  _globals['_MATCH_CAPTURESENTRY']._serialized_end=4925
++  _globals['_MATCHFEATURE']._serialized_start=4935
++  _globals['_MATCHFEATURE']._serialized_end=5020
++  _globals['_METADATA']._serialized_start=5023
++  _globals['_METADATA']._serialized_end=5339
++  _globals['_MNEMONICFEATURE']._serialized_start=5341
++  _globals['_MNEMONICFEATURE']._serialized_end=5432
++  _globals['_NAMESPACEFEATURE']._serialized_start=5434
++  _globals['_NAMESPACEFEATURE']._serialized_end=5527
++  _globals['_NUMBERFEATURE']._serialized_start=5529
++  _globals['_NUMBERFEATURE']._serialized_end=5639
++  _globals['_OSFEATURE']._serialized_start=5641
++  _globals['_OSFEATURE']._serialized_end=5720
++  _globals['_OFFSETFEATURE']._serialized_start=5722
++  _globals['_OFFSETFEATURE']._serialized_end=5833
++  _globals['_OPERANDNUMBERFEATURE']._serialized_start=5836
++  _globals['_OPERANDNUMBERFEATURE']._serialized_end=5977
++  _globals['_OPERANDOFFSETFEATURE']._serialized_start=5980
++  _globals['_OPERANDOFFSETFEATURE']._serialized_end=6121
++  _globals['_PROCESSFEATURECOUNT']._serialized_start=6123
++  _globals['_PROCESSFEATURECOUNT']._serialized_end=6200
++  _globals['_PROCESSLAYOUT']._serialized_start=6202
++  _globals['_PROCESSLAYOUT']._serialized_end=6326
++  _globals['_PROPERTYFEATURE']._serialized_start=6328
++  _globals['_PROPERTYFEATURE']._serialized_end=6452
++  _globals['_RANGESTATEMENT']._serialized_start=6455
++  _globals['_RANGESTATEMENT']._serialized_end=6596
++  _globals['_REGEXFEATURE']._serialized_start=6598
++  _globals['_REGEXFEATURE']._serialized_end=6683
++  _globals['_RESULTDOCUMENT']._serialized_start=6686
++  _globals['_RESULTDOCUMENT']._serialized_end=6872
++  _globals['_RESULTDOCUMENT_RULESENTRY']._serialized_start=6800
++  _globals['_RESULTDOCUMENT_RULESENTRY']._serialized_end=6872
++  _globals['_RULEMATCHES']._serialized_start=6874
++  _globals['_RULEMATCHES']._serialized_end=6998
++  _globals['_RULEMETADATA']._serialized_start=7001
++  _globals['_RULEMETADATA']._serialized_end=7366
++  _globals['_SAMPLE']._serialized_start=7368
++  _globals['_SAMPLE']._serialized_end=7433
++  _globals['_SCOPES']._serialized_start=7435
++  _globals['_SCOPES']._serialized_end=7553
++  _globals['_SECTIONFEATURE']._serialized_start=7555
++  _globals['_SECTIONFEATURE']._serialized_end=7644
++  _globals['_SOMESTATEMENT']._serialized_start=7646
++  _globals['_SOMESTATEMENT']._serialized_end=7732
++  _globals['_STATEMENTNODE']._serialized_start=7735
++  _globals['_STATEMENTNODE']._serialized_end=7979
++  _globals['_STATICANALYSIS']._serialized_start=7982
++  _globals['_STATICANALYSIS']._serialized_end=8326
++  _globals['_STATICFEATURECOUNTS']._serialized_start=8328
++  _globals['_STATICFEATURECOUNTS']._serialized_end=8419
++  _globals['_STATICLAYOUT']._serialized_start=8421
++  _globals['_STATICLAYOUT']._serialized_end=8485
++  _globals['_STRINGFEATURE']._serialized_start=8487
++  _globals['_STRINGFEATURE']._serialized_end=8574
++  _globals['_SUBSCOPESTATEMENT']._serialized_start=8576
++  _globals['_SUBSCOPESTATEMENT']._serialized_end=8688
++  _globals['_SUBSTRINGFEATURE']._serialized_start=8690
++  _globals['_SUBSTRINGFEATURE']._serialized_end=8783
++  _globals['_CALLLAYOUT']._serialized_start=8785
++  _globals['_CALLLAYOUT']._serialized_end=8852
++  _globals['_THREADLAYOUT']._serialized_start=8854
++  _globals['_THREADLAYOUT']._serialized_end=8959
++  _globals['_ADDRESSES']._serialized_start=8961
++  _globals['_ADDRESSES']._serialized_end=9013
++  _globals['_PAIR_ADDRESS_MATCH']._serialized_start=9015
++  _globals['_PAIR_ADDRESS_MATCH']._serialized_end=9113
++  _globals['_TOKEN_OFFSET']._serialized_start=9115
++  _globals['_TOKEN_OFFSET']._serialized_end=9184
++  _globals['_PPID_PID']._serialized_start=9186
++  _globals['_PPID_PID']._serialized_end=9271
++  _globals['_PPID_PID_TID']._serialized_start=9273
++  _globals['_PPID_PID_TID']._serialized_end=9399
++  _globals['_PPID_PID_TID_ID']._serialized_start=9402
++  _globals['_PPID_PID_TID_ID']._serialized_end=9567
++  _globals['_INTEGER']._serialized_start=9569
++  _globals['_INTEGER']._serialized_end=9613
++  _globals['_NUMBER']._serialized_start=9615
++  _globals['_NUMBER']._serialized_end=9671
+ # @@protoc_insertion_point(module_scope)
+diff --git a/capa/render/proto/capa_pb2.pyi b/capa/render/proto/capa_pb2.pyi
+index 98420a29..0c3c4106 100644
+--- a/capa/render/proto/capa_pb2.pyi
++++ b/capa/render/proto/capa_pb2.pyi
+@@ -95,6 +95,7 @@ class _ScopeEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumType
+     SCOPE_THREAD: _Scope.ValueType  # 6
+     SCOPE_CALL: _Scope.ValueType  # 7
+     SCOPE_SPAN_OF_CALLS: _Scope.ValueType  # 8
++    SCOPE_STATEMENT: _Scope.ValueType  # 9
+ 
+ class Scope(_Scope, metaclass=_ScopeEnumTypeWrapper): ...
+ 
+@@ -107,6 +108,7 @@ SCOPE_PROCESS: Scope.ValueType  # 5
+ SCOPE_THREAD: Scope.ValueType  # 6
+ SCOPE_CALL: Scope.ValueType  # 7
+ SCOPE_SPAN_OF_CALLS: Scope.ValueType  # 8
++SCOPE_STATEMENT: Scope.ValueType  # 9
+ global___Scope = Scope
+ 
+ @typing.final
+@@ -534,6 +536,9 @@ class FeatureNode(google.protobuf.message.Message):
+     OPERAND_NUMBER_FIELD_NUMBER: builtins.int
+     OPERAND_OFFSET_FIELD_NUMBER: builtins.int
+     BASIC_BLOCK_FIELD_NUMBER: builtins.int
++    SCRIPT_CALL_FIELD_NUMBER: builtins.int
++    SCRIPT_VARIABLE_FIELD_NUMBER: builtins.int
++    SCRIPT_STRUCTURE_FIELD_NUMBER: builtins.int
+     type: builtins.str
+     @property
+     def os(self) -> global___OSFeature: ...
+@@ -585,6 +590,12 @@ class FeatureNode(google.protobuf.message.Message):
+     def operand_offset(self) -> global___OperandOffsetFeature: ...
+     @property
+     def basic_block(self) -> global___BasicBlockFeature: ...
++    @property
++    def script_call(self) -> global___ScriptCallFeature: ...
++    @property
++    def script_variable(self) -> global___ScriptVariableFeature: ...
++    @property
++    def script_structure(self) -> global___ScriptStructureFeature: ...
+     def __init__(
+         self,
+         *,
+@@ -612,13 +623,88 @@ class FeatureNode(google.protobuf.message.Message):
+         operand_number: global___OperandNumberFeature | None = ...,
+         operand_offset: global___OperandOffsetFeature | None = ...,
+         basic_block: global___BasicBlockFeature | None = ...,
++        script_call: global___ScriptCallFeature | None = ...,
++        script_variable: global___ScriptVariableFeature | None = ...,
++        script_structure: global___ScriptStructureFeature | None = ...,
+     ) -> None: ...
+-    def HasField(self, field_name: typing.Literal["api", b"api", "arch", b"arch", "basic_block", b"basic_block", "bytes", b"bytes", "characteristic", b"characteristic", "class_", b"class_", "export", b"export", "feature", b"feature", "format", b"format", "function_name", b"function_name", "import_", b"import_", "match", b"match", "mnemonic", b"mnemonic", "namespace", b"namespace", "number", b"number", "offset", b"offset", "operand_number", b"operand_number", "operand_offset", b"operand_offset", "os", b"os", "property_", b"property_", "regex", b"regex", "section", b"section", "string", b"string", "substring", b"substring"]) -> builtins.bool: ...
+-    def ClearField(self, field_name: typing.Literal["api", b"api", "arch", b"arch", "basic_block", b"basic_block", "bytes", b"bytes", "characteristic", b"characteristic", "class_", b"class_", "export", b"export", "feature", b"feature", "format", b"format", "function_name", b"function_name", "import_", b"import_", "match", b"match", "mnemonic", b"mnemonic", "namespace", b"namespace", "number", b"number", "offset", b"offset", "operand_number", b"operand_number", "operand_offset", b"operand_offset", "os", b"os", "property_", b"property_", "regex", b"regex", "section", b"section", "string", b"string", "substring", b"substring", "type", b"type"]) -> None: ...
+-    def WhichOneof(self, oneof_group: typing.Literal["feature", b"feature"]) -> typing.Literal["os", "arch", "format", "match", "characteristic", "export", "import_", "section", "function_name", "substring", "regex", "string", "class_", "namespace", "api", "property_", "number", "bytes", "offset", "mnemonic", "operand_number", "operand_offset", "basic_block"] | None: ...
++    def HasField(self, field_name: typing.Literal["api", b"api", "arch", b"arch", "basic_block", b"basic_block", "bytes", b"bytes", "characteristic", b"characteristic", "class_", b"class_", "export", b"export", "feature", b"feature", "format", b"format", "function_name", b"function_name", "import_", b"import_", "match", b"match", "mnemonic", b"mnemonic", "namespace", b"namespace", "number", b"number", "offset", b"offset", "operand_number", b"operand_number", "operand_offset", b"operand_offset", "os", b"os", "property_", b"property_", "regex", b"regex", "script_call", b"script_call", "script_structure", b"script_structure", "script_variable", b"script_variable", "section", b"section", "string", b"string", "substring", b"substring"]) -> builtins.bool: ...
++    def ClearField(self, field_name: typing.Literal["api", b"api", "arch", b"arch", "basic_block", b"basic_block", "bytes", b"bytes", "characteristic", b"characteristic", "class_", b"class_", "export", b"export", "feature", b"feature", "format", b"format", "function_name", b"function_name", "import_", b"import_", "match", b"match", "mnemonic", b"mnemonic", "namespace", b"namespace", "number", b"number", "offset", b"offset", "operand_number", b"operand_number", "operand_offset", b"operand_offset", "os", b"os", "property_", b"property_", "regex", b"regex", "script_call", b"script_call", "script_structure", b"script_structure", "script_variable", b"script_variable", "section", b"section", "string", b"string", "substring", b"substring", "type", b"type"]) -> None: ...
++    def WhichOneof(self, oneof_group: typing.Literal["feature", b"feature"]) -> typing.Literal["os", "arch", "format", "match", "characteristic", "export", "import_", "section", "function_name", "substring", "regex", "string", "class_", "namespace", "api", "property_", "number", "bytes", "offset", "mnemonic", "operand_number", "operand_offset", "basic_block", "script_call", "script_variable", "script_structure"] | None: ...
+ 
+ global___FeatureNode = FeatureNode
+ 
++@typing.final
++class ScriptCallFeature(google.protobuf.message.Message):
++    DESCRIPTOR: google.protobuf.descriptor.Descriptor
++
++    TYPE_FIELD_NUMBER: builtins.int
++    SCRIPT_CALL_FIELD_NUMBER: builtins.int
++    DESCRIPTION_FIELD_NUMBER: builtins.int
++    type: builtins.str
++    script_call: builtins.str
++    description: builtins.str
++    def __init__(
++        self,
++        *,
++        type: builtins.str = ...,
++        script_call: builtins.str = ...,
++        description: builtins.str | None = ...,
++    ) -> None: ...
++    def HasField(self, field_name: typing.Literal["_description", b"_description", "description", b"description"]) -> builtins.bool: ...
++    def ClearField(self, field_name: typing.Literal["_description", b"_description", "description", b"description", "script_call", b"script_call", "type", b"type"]) -> None: ...
++    def WhichOneof(self, oneof_group: typing.Literal["_description", b"_description"]) -> typing.Literal["description"] | None: ...
++
++global___ScriptCallFeature = ScriptCallFeature
++
++@typing.final
++class ScriptVariableFeature(google.protobuf.message.Message):
++    DESCRIPTOR: google.protobuf.descriptor.Descriptor
++
++    TYPE_FIELD_NUMBER: builtins.int
++    SCRIPT_VARIABLE_FIELD_NUMBER: builtins.int
++    ACCESS_FIELD_NUMBER: builtins.int
++    DESCRIPTION_FIELD_NUMBER: builtins.int
++    type: builtins.str
++    script_variable: builtins.str
++    access: builtins.str
++    description: builtins.str
++    def __init__(
++        self,
++        *,
++        type: builtins.str = ...,
++        script_variable: builtins.str = ...,
++        access: builtins.str = ...,
++        description: builtins.str | None = ...,
++    ) -> None: ...
++    def HasField(self, field_name: typing.Literal["_description", b"_description", "description", b"description"]) -> builtins.bool: ...
++    def ClearField(self, field_name: typing.Literal["_description", b"_description", "access", b"access", "description", b"description", "script_variable", b"script_variable", "type", b"type"]) -> None: ...
++    def WhichOneof(self, oneof_group: typing.Literal["_description", b"_description"]) -> typing.Literal["description"] | None: ...
++
++global___ScriptVariableFeature = ScriptVariableFeature
++
++@typing.final
++class ScriptStructureFeature(google.protobuf.message.Message):
++    DESCRIPTOR: google.protobuf.descriptor.Descriptor
++
++    TYPE_FIELD_NUMBER: builtins.int
++    SCRIPT_STRUCTURE_FIELD_NUMBER: builtins.int
++    DESCRIPTION_FIELD_NUMBER: builtins.int
++    type: builtins.str
++    script_structure: builtins.str
++    description: builtins.str
++    def __init__(
++        self,
++        *,
++        type: builtins.str = ...,
++        script_structure: builtins.str = ...,
++        description: builtins.str | None = ...,
++    ) -> None: ...
++    def HasField(self, field_name: typing.Literal["_description", b"_description", "description", b"description"]) -> builtins.bool: ...
++    def ClearField(self, field_name: typing.Literal["_description", b"_description", "description", b"description", "script_structure", b"script_structure", "type", b"type"]) -> None: ...
++    def WhichOneof(self, oneof_group: typing.Literal["_description", b"_description"]) -> typing.Literal["description"] | None: ...
++
++global___ScriptStructureFeature = ScriptStructureFeature
++
+ @typing.final
+ class FormatFeature(google.protobuf.message.Message):
+     DESCRIPTOR: google.protobuf.descriptor.Descriptor
+@@ -668,18 +754,22 @@ class FunctionLayout(google.protobuf.message.Message):
+ 
+     ADDRESS_FIELD_NUMBER: builtins.int
+     MATCHED_BASIC_BLOCKS_FIELD_NUMBER: builtins.int
++    MATCHED_STATEMENTS_FIELD_NUMBER: builtins.int
+     @property
+     def address(self) -> global___Address: ...
+     @property
+     def matched_basic_blocks(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___BasicBlockLayout]: ...
++    @property
++    def matched_statements(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___Address]: ...
+     def __init__(
+         self,
+         *,
+         address: global___Address | None = ...,
+         matched_basic_blocks: collections.abc.Iterable[global___BasicBlockLayout] | None = ...,
++        matched_statements: collections.abc.Iterable[global___Address] | None = ...,
+     ) -> None: ...
+     def HasField(self, field_name: typing.Literal["address", b"address"]) -> builtins.bool: ...
+-    def ClearField(self, field_name: typing.Literal["address", b"address", "matched_basic_blocks", b"matched_basic_blocks"]) -> None: ...
++    def ClearField(self, field_name: typing.Literal["address", b"address", "matched_basic_blocks", b"matched_basic_blocks", "matched_statements", b"matched_statements"]) -> None: ...
+ 
+ global___FunctionLayout = FunctionLayout
+ 
+@@ -1520,10 +1610,12 @@ class StaticAnalysis(google.protobuf.message.Message):
+     LAYOUT_FIELD_NUMBER: builtins.int
+     FEATURE_COUNTS_FIELD_NUMBER: builtins.int
+     LIBRARY_FUNCTIONS_FIELD_NUMBER: builtins.int
++    SCRIPT_JSON_FIELD_NUMBER: builtins.int
+     format: builtins.str
+     arch: builtins.str
+     os: builtins.str
+     extractor: builtins.str
++    script_json: builtins.str
+     @property
+     def rules(self) -> google.protobuf.internal.containers.RepeatedScalarFieldContainer[builtins.str]: ...
+     @property
+@@ -1546,9 +1638,11 @@ class StaticAnalysis(google.protobuf.message.Message):
+         layout: global___StaticLayout | None = ...,
+         feature_counts: global___StaticFeatureCounts | None = ...,
+         library_functions: collections.abc.Iterable[global___LibraryFunction] | None = ...,
++        script_json: builtins.str | None = ...,
+     ) -> None: ...
+-    def HasField(self, field_name: typing.Literal["base_address", b"base_address", "feature_counts", b"feature_counts", "layout", b"layout"]) -> builtins.bool: ...
+-    def ClearField(self, field_name: typing.Literal["arch", b"arch", "base_address", b"base_address", "extractor", b"extractor", "feature_counts", b"feature_counts", "format", b"format", "layout", b"layout", "library_functions", b"library_functions", "os", b"os", "rules", b"rules"]) -> None: ...
++    def HasField(self, field_name: typing.Literal["_script_json", b"_script_json", "base_address", b"base_address", "feature_counts", b"feature_counts", "layout", b"layout", "script_json", b"script_json"]) -> builtins.bool: ...
++    def ClearField(self, field_name: typing.Literal["_script_json", b"_script_json", "arch", b"arch", "base_address", b"base_address", "extractor", b"extractor", "feature_counts", b"feature_counts", "format", b"format", "layout", b"layout", "library_functions", b"library_functions", "os", b"os", "rules", b"rules", "script_json", b"script_json"]) -> None: ...
++    def WhichOneof(self, oneof_group: typing.Literal["_script_json", b"_script_json"]) -> typing.Literal["script_json"] | None: ...
+ 
+ global___StaticAnalysis = StaticAnalysis
+ 
+diff --git a/capa/render/result_document.py b/capa/render/result_document.py
+index d1b8005e..ac25b57c 100644
+--- a/capa/render/result_document.py
++++ b/capa/render/result_document.py
+@@ -57,6 +57,7 @@ class BasicBlockLayout(Model):
+ class FunctionLayout(Model):
+     address: frz.Address
+     matched_basic_blocks: tuple[BasicBlockLayout, ...]
++    matched_statements: tuple[frz.Address, ...] | None = None
+ 
+ 
+ class CallLayout(Model):
+@@ -115,6 +116,7 @@ FeatureCounts: TypeAlias = Union[StaticFeatureCounts, DynamicFeatureCounts]
+ 
+ 
+ class StaticAnalysis(Model):
++    script: dict | None = None
+     format: str
+     arch: str
+     os: str
+@@ -334,6 +336,8 @@ class Match(FrozenModel):
+         capabilities: MatchResults,
+         result: capa.engine.Result,
+     ) -> "Match":
++        if result.statement_capabilities is not None:
++            capabilities = result.statement_capabilities
+         success = bool(result)
+ 
+         node = node_from_capa(result.statement)
+diff --git a/capa/rules/__init__.py b/capa/rules/__init__.py
+index ef4e372c..57fa5c6c 100644
+--- a/capa/rules/__init__.py
++++ b/capa/rules/__init__.py
+@@ -40,6 +40,7 @@ import capa.features.com
+ import capa.features.file
+ import capa.features.insn
+ import capa.features.common
++import capa.features.script
+ import capa.features.basicblock
+ from capa.engine import Statement, FeatureSet
+ from capa.helpers import assert_never
+@@ -88,6 +89,7 @@ class Scope(str, Enum):
+     SPAN_OF_CALLS = "span of calls"
+     CALL = "call"
+     FUNCTION = "function"
++    STATEMENT = "statement"
+     BASIC_BLOCK = "basic block"
+     INSTRUCTION = "instruction"
+ 
+@@ -103,6 +105,7 @@ class Scope(str, Enum):
+ # these literals are used to check if the flavor
+ # of a rule is correct.
+ STATIC_SCOPES = {
++    Scope.STATEMENT,
+     Scope.FILE,
+     Scope.GLOBAL,
+     Scope.FUNCTION,
+@@ -177,6 +180,16 @@ class Scopes:
+ 
+ 
+ SUPPORTED_FEATURES: dict[str, set] = {
++    Scope.STATEMENT: {
++        capa.features.script.ScriptCall,
++        capa.features.script.ScriptVariable,
++        capa.features.script.ScriptStructure,
++        capa.features.common.MatchedRule,
++        capa.features.common.String,
++        capa.features.common.Regex,
++        capa.features.common.Substring,
++        capa.features.insn.Number,
++    },
+     Scope.GLOBAL: {
+         # these will be added to other scopes, see below.
+         capa.features.common.OS,
+@@ -249,6 +262,8 @@ SUPPORTED_FEATURES: dict[str, set] = {
+ }
+ 
+ # global scope features are available in all other scopes
++SUPPORTED_FEATURES[Scope.STATEMENT].update(SUPPORTED_FEATURES[Scope.GLOBAL])
++SUPPORTED_FEATURES[Scope.FUNCTION].update(SUPPORTED_FEATURES[Scope.STATEMENT])
+ SUPPORTED_FEATURES[Scope.INSTRUCTION].update(SUPPORTED_FEATURES[Scope.GLOBAL])
+ SUPPORTED_FEATURES[Scope.BASIC_BLOCK].update(SUPPORTED_FEATURES[Scope.GLOBAL])
+ SUPPORTED_FEATURES[Scope.FUNCTION].update(SUPPORTED_FEATURES[Scope.GLOBAL])
+@@ -443,6 +458,12 @@ def parse_feature(key: str):
+         return capa.features.common.Class
+     elif key == "namespace":
+         return capa.features.common.Namespace
++    elif key == "script-call":
++        return capa.features.script.ScriptCall
++    elif key == "script-structure":
++        return capa.features.script.ScriptStructure
++    elif key in ("script-variable/read", "script-variable/write"):
++        return functools.partial(capa.features.script.ScriptVariable, access=key.split("/")[1])
+     elif key == "property":
+         return capa.features.insn.Property
+     elif key.startswith("operand[") and key.endswith("].number"):
+@@ -614,6 +635,12 @@ def is_subscope_compatible(scope: Scope | None, subscope: Scope) -> bool:
+     if not scope:
+         return False
+ 
++    if subscope == Scope.STATEMENT:
++        return scope in (Scope.FILE, Scope.FUNCTION, Scope.STATEMENT)
++
++    if scope == Scope.STATEMENT:
++        return False
++
+     if subscope in STATIC_SCOPE_ORDER:
+         try:
+             return STATIC_SCOPE_ORDER.index(subscope) >= STATIC_SCOPE_ORDER.index(scope)
+@@ -748,6 +775,20 @@ def build_feature(
+     ):
+         raise InvalidRule(f"unexpected {key} value {initial_value}")
+ 
++    elif key in ("script-call", "script-structure", "script-variable/read", "script-variable/write"):
++        value, description = parse_description(initial_value, key, description=initial_description)
++        if not isinstance(value, str):
++            raise InvalidRule(f"unexpected {key} value type: {type(value)}")
++        try:
++            if key.startswith("script-variable/"):
++                return capa.features.script.ScriptVariable(value, access=key.split("/")[1], description=description)
++            constructor = (
++                capa.features.script.ScriptCall if key == "script-call" else capa.features.script.ScriptStructure
++            )
++            return constructor(value, description=description)
++        except ValueError as e:
++            raise InvalidRule(str(e)) from e
++
+     elif key.startswith("property/"):
+         access = key[len("property/") :]
+         if access not in capa.features.common.VALID_FEATURE_ACCESS:
+@@ -946,6 +987,12 @@ def build_statements(d, scopes: Scopes):
+             description=description,
+         )
+ 
++    elif key == "statement":
++        if not is_subscope_compatible(scopes.static, Scope.STATEMENT):
++            raise InvalidRule("`statement` subscope supported only for script scopes")
++        statements = ceng.And(unique(build_statements(dd, Scopes(static=Scope.STATEMENT)) for dd in d[key]))
++        return ceng.Subscope(Scope.STATEMENT, statements, description=description)
++
+     elif key == "basic block":
+         if not is_subscope_compatible(scopes.static, Scope.BASIC_BLOCK):
+             raise InvalidRule("`basic block` subscope supported only for `function` scope")
+@@ -1208,7 +1255,11 @@ class Rule:
+         if not isinstance(meta.get("mbc", []), list):
+             raise InvalidRule("MBC mapping must be a list")
+ 
+-        return cls(name, scopes, build_statements(statements[0], scopes), meta, definition)  # type: ignore[arg-type]  # build_statements infers wide union but top-level always returns Statement
++        statement = build_statements(statements[0], scopes)
++        # A root statement subscope still needs a parent so extraction can replace it with a match.
++        if isinstance(statement, ceng.Subscope) and statement.scope == Scope.STATEMENT:
++            statement = ceng.And([statement])
++        return cls(name, scopes, statement, meta, definition)  # type: ignore[arg-type]
+ 
+     @staticmethod
+     @lru_cache
+@@ -1554,6 +1605,7 @@ class RuleSet:
+             Scope.SPAN_OF_CALLS,
+             Scope.THREAD,
+             Scope.PROCESS,
++            Scope.STATEMENT,
+             Scope.INSTRUCTION,
+             Scope.BASIC_BLOCK,
+             Scope.FUNCTION,
+@@ -1605,6 +1657,10 @@ class RuleSet:
+     def basic_block_rules(self):
+         return self.rules_by_scope[Scope.BASIC_BLOCK]
+ 
++    @property
++    def statement_rules(self):
++        return self.rules_by_scope[Scope.STATEMENT]
++
+     @property
+     def instruction_rules(self):
+         return self.rules_by_scope[Scope.INSTRUCTION]
+@@ -1720,6 +1776,9 @@ class RuleSet:
+             #
+             capa.features.common.String: 9,
+             capa.features.insn.API: 8,
++            capa.features.script.ScriptCall: 8,
++            capa.features.script.ScriptVariable: 5,
++            capa.features.script.ScriptStructure: 2,
+             capa.features.file.Export: 7,
+             # "uncommon numbers": 7 (placeholder for logic above)
+             #
+diff --git a/scripts/lint.py b/scripts/lint.py
+index 9821d6d7..ae6fce4c 100644
+--- a/scripts/lint.py
++++ b/scripts/lint.py
+@@ -47,6 +47,7 @@ import capa.engine
+ import capa.loader
+ import capa.helpers
+ import capa.features.insn
++import capa.features.script
+ import capa.capabilities.common
+ from capa.rules import Rule, RuleSet
+ from capa.features.common import OS_AUTO, Regex, String, Feature, Substring
+@@ -180,7 +181,9 @@ class MissingDynamicScope(Lint):
+ 
+ class InvalidStaticScope(Lint):
+     name = "invalid static scope"
+-    recommendation = "For the static scope, use either: file, function, basic block, instruction, or unsupported"
++    recommendation = (
++        "For the static scope, use either: file, function, statement, basic block, instruction, or unsupported"
++    )
+ 
+     def check_rule(self, ctx: Context, rule: Rule):
+         scopes = rule.meta.get("scopes")
+@@ -191,6 +194,7 @@ class InvalidStaticScope(Lint):
+             "function",
+             "basic block",
+             "instruction",
++            "statement",
+             "unsupported",
+         )
+ 
+@@ -249,7 +253,7 @@ class MissingExampleOffset(Lint):
+     name = "missing example offset"
+     recommendation = "Add offset of example (static: hash:0xADDR, dynamic: hash:(pid:N,tid:N,call:N))"
+ 
+-    STATIC_SCOPES_NEEDING_OFFSET = ("function", "basic block")
++    STATIC_SCOPES_NEEDING_OFFSET = ("function", "basic block", "statement")
+     DYNAMIC_SCOPES_NEEDING_OFFSET = ("process", "thread", "call", "span of calls")
+ 
+     def check_rule(self, ctx: Context, rule: Rule):
+@@ -518,6 +522,53 @@ class NotNotUnderAnd(Lint):
+         return self.violation
+ 
+ 
++class ScriptFeaturesMissingFormat(Lint):
++    name = "script features missing format"
++    recommendation = "Add an explicit powershell, python, or bash format condition to each script feature branch"
++
++    def check_rule(self, ctx: Context, rule: Rule):
++        # RuleSet extracts subscopes into derived rules. Inspect the original source
++        # tree so a format outside a statement subscope still protects that branch.
++        source = Rule.from_yaml(rule.definition) if rule.definition else rule
++        script_features = (
++            capa.features.script.ScriptCall,
++            capa.features.script.ScriptVariable,
++            capa.features.script.ScriptStructure,
++        )
++
++        def guarantees_format(node):
++            if isinstance(node, capa.features.common.Format):
++                return node.value in capa.features.common.SCRIPT_FORMATS
++            if isinstance(node, capa.engine.And):
++                return any(guarantees_format(child) for child in node.get_children())
++            if isinstance(node, capa.engine.Or):
++                children = list(node.get_children())
++                return bool(children) and all(guarantees_format(child) for child in children)
++            if isinstance(node, capa.engine.Some):
++                children = list(node.get_children())
++                return node.count > sum(not guarantees_format(child) for child in children)
++            if isinstance(node, capa.engine.Subscope):
++                return guarantees_format(node.child)
++            return False
++
++        def violates(node, guarded=False, positive=True, script_scope=False):
++            if isinstance(node, script_features):
++                return not guarded
++            if isinstance(node, capa.engine.Not):
++                return violates(node.child, guarded, not positive, script_scope)
++            if isinstance(node, capa.engine.Subscope):
++                script_scope = script_scope or node.scope == capa.rules.Scope.STATEMENT
++            if isinstance(node, (capa.engine.And, capa.engine.Some)) and positive:
++                guarded = guarded or guarantees_format(node)
++            if isinstance(node, capa.engine.Statement):
++                return any(violates(child, guarded, positive, script_scope) for child in node.get_children())
++            if script_scope:
++                return not (guarded or (positive and guarantees_format(node)))
++            return False
++
++        return violates(source.statement, script_scope=source.scopes.static == capa.rules.Scope.STATEMENT)
++
++
+ class RuleDependencyScopeMismatch(Lint):
+     name = "rule dependency scope mismatch"
+     level = Lint.FAIL
+@@ -1092,6 +1143,7 @@ def get_rule_features(rule):
+ 
+ 
+ LOGIC_LINTS = (
++    ScriptFeaturesMissingFormat(),
+     DoesntMatchExample(),
+     StatementWithSingleChildStatement(),
+     OrStatementWithAlwaysTrueChild(),
