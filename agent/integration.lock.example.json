@@ -1,0 +1,8 @@
+{
+  "capa_revision": "REPLACE_WITH_EXACT_CAPA_HEAD",
+  "rules_revision": "REPLACE_WITH_EXACT_RULES_HEAD",
+  "agent_revision": "REPLACE_WITH_EXACT_AGENT_HEAD",
+  "helper_version": "0.1.0",
+  "script_schema": 1,
+  "sample_manifest_hash": "REPLACE_WITH_MANIFEST_COMMAND_OUTPUT"
+}
