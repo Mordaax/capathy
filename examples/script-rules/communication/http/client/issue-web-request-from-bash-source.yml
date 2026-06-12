@@ -1,0 +1,16 @@
+rule:
+  meta:
+    name: issue web request from Bash source
+    namespace: communication/http/client
+    authors:
+      - capa contributors
+    description: Demonstration source rule; requires a direct curl command.
+    scopes:
+      static: statement
+      dynamic: unsupported
+    examples:
+      - 38258a17cdb9d95386b2ab50403b7cd2d386dfbc0f3745bd9f291dd23b4a2717:0x3A
+  features:
+    - and:
+      - format: bash
+      - script-call: curl
