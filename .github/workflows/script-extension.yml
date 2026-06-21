@@ -1,0 +1,80 @@
+name: Script analysis extension
+
+on:
+  pull_request:
+    paths: ['native/**', 'agent/**', 'capathy/**', 'tests/**', 'scripts/**', 'pyproject.toml', 'examples/**', '.github/workflows/script-extension.yml']
+  push:
+    paths: ['native/**', 'agent/**', 'capathy/**', 'tests/**', 'scripts/**', 'pyproject.toml', 'examples/**', '.github/workflows/script-extension.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parser:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: native/script/go.mod
+          cache-dependency-path: native/script/go.sum
+      - run: go mod verify
+        working-directory: native/script
+      - run: go test -race ./...
+        working-directory: native/script
+      - run: go vet ./...
+        working-directory: native/script
+      - run: go build -o bin/ ./cmd/capa-script-extractor
+        working-directory: native/script
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: capa-script-extractor-${{ matrix.os }}
+          path: native/script/bin/*
+
+  integration:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python: ['3.10', '3.13']
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: native/script/go.mod
+          cache-dependency-path: native/script/go.sum
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[test]"
+      - run: python -m capathy setup
+      - run: go build -o bin/capa-script-extractor ./cmd/capa-script-extractor
+        working-directory: native/script
+      - run: python -m pytest -q
+
+  agent:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+      - run: go mod verify
+        working-directory: agent
+      - run: go test -race ./...
+        working-directory: agent
+      - run: go vet ./...
+        working-directory: agent
+      - run: go build ./cmd/capa-rule-agent
+        working-directory: agent
