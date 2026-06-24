@@ -79,7 +79,8 @@ func draft(ctx context.Context, args []string, out io.Writer) error {
 	shareable := flags.Bool("shareable", false, "operator attests local sample may be publicly shared")
 	real := flags.Bool("real", false, "operator attests local positive is a genuine sample, not synthetic")
 	recorded := flags.String("proposal", "", "recorded structured proposal JSON for offline replay")
-	live := flags.Bool("live", false, "explicitly enable hosted Gemini drafting of evidence only")
+	live := flags.Bool("live", false, "explicitly enable hosted model drafting of evidence only")
+	provider := flags.String("provider", "gemini", "live drafting provider: gemini or claude")
 	dotenv := flags.String("env-file", "", "explicit dotenv file (optional; never copied)")
 	output := flags.String("out", "", "private output JSON file, otherwise stdout")
 	dryRun := flags.Bool("dry-run", true, "local output only (always true in this release)")
@@ -132,11 +133,15 @@ func draft(ctx context.Context, args []string, out io.Writer) error {
 			}
 			model = workflow.RecordedModel{Proposal: p}
 		} else {
-			cfg, err := config.Load(*dotenv, os.Getenv)
+			cfg, err := config.LoadProvider(*dotenv, os.Getenv, *provider)
 			if err != nil {
 				return err
 			}
-			model, err = workflow.NewGemini(ctx, cfg)
+			if cfg.Provider == "claude" {
+				model, err = workflow.NewClaude(ctx, cfg)
+			} else {
+				model, err = workflow.NewGemini(ctx, cfg)
+			}
 			if err != nil {
 				return err
 			}

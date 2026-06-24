@@ -17,7 +17,7 @@ For example, a rule could recognize process creation from relevant API calls. Ca
 Capathy helps create new rules through three steps:
 
 1. **Collect evidence:** parse PowerShell, Python, and Bash scripts, or import existing capa JSON results for binaries.
-2. **Draft a rule:** use a Go agent and Gemini to propose YAML rules with citations to the observed evidence.
+2. **Draft a rule:** use a Go agent with Gemini or Claude to propose YAML rules with citations to the observed evidence.
 3. **Validate and review:** check candidates with capa's formatter, linter, and positive/negative sample tests, then prepare a local review package.
 
 Examples:
@@ -63,12 +63,14 @@ Import the evidence and describe the capability you want to detect:
   --out out/request.json
 ```
 
-Generate a candidate with Gemini using an API key in your `.env` file:
+Generate a candidate with Claude using `ANTHROPIC_API_KEY` (or `CLAUDE_API_KEY`) in your `.env` file:
 
 ```sh
 .venv/bin/python -m capathy agent draft \
-  --request out/request.json --live --env-file .env --out out/draft.json
+  --request out/request.json --provider claude --live --env-file .env --out out/draft.json
 ```
+
+Use `--provider gemini` for Gemini instead. Both providers use the same evidence and validation checks.
 
 For this evidence, a candidate rule could look like:
 

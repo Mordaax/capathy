@@ -1,6 +1,6 @@
 # capa rule agent — initial local delivery
 
-This Go module prepares evidence-grounded capa rule candidates, validates them using installed capa tooling, and writes private review bundles. Samples are hashed and parsed by capa; their code is never executed. Raw source and local sample paths are excluded from Gemini input. Model/network calls occur only with explicit `draft --live`.
+This Go module prepares evidence-grounded capa rule candidates, validates them using installed capa tooling, and writes private review bundles. Samples are hashed and parsed by capa; their code is never executed. Raw source and local sample paths are excluded from model input. Model/network calls occur only with explicit `draft --live`.
 
 Requires Go **1.26.6+** (pinned ADK v2.6.0 minimum), Python with the external patched capa runtime installed (`python -m capathy setup`), and a built script helper for script analysis.
 
@@ -23,14 +23,15 @@ The output is a schema 1 request. Source bytes are excluded. Script capa results
 
 ## Drafting
 
-Replay a recorded proposal without credentials/network, or explicitly call hosted Gemini through the pinned ADK model adapter:
+Replay a recorded proposal without credentials/network, or explicitly call Gemini through ADK or Claude through the Messages API:
 
 ```sh
 ./bin/capa-rule-agent draft --request out-request.json --proposal recorded-proposal.json
-./bin/capa-rule-agent draft --request out-request.json --live --env-file /absolute/private/.env
+./bin/capa-rule-agent draft --request out-request.json --provider gemini --live --env-file /absolute/private/.env
+./bin/capa-rule-agent draft --request out-request.json --provider claude --live --env-file /absolute/private/.env
 ```
 
-Credential precedence: process GOOGLE_API_KEY, process GEMINI_API_KEY, dotenv GOOGLE_API_KEY, dotenv GEMINI_API_KEY. Credentials are hidden from formatting/JSON. `CAPA_AGENT_MODEL` selects a model (default `gemini-2.5-flash`; live availability unverified). Calls have deadlines, bounded input/output and no tools. Strict output rejects invented citations and command/tool fields.
+Select `--provider gemini` (the default) or `--provider claude`. Claude defaults to `claude-haiku-5-5` and uses `ANTHROPIC_API_KEY` or `CLAUDE_API_KEY`; Gemini uses `GOOGLE_API_KEY` or `GEMINI_API_KEY`. Process credentials take precedence over the selected dotenv file, and keys are never shared between providers. Credentials are hidden from formatting/JSON. `CAPA_AGENT_MODEL` selects a model (default `gemini-3.8-flash`). Both providers request a closed JSON schema with the exact request ID and known evidence IDs. Calls have deadlines, bounded input/output and no tools. Gemini 3 drafting uses low reasoning and omits deprecated sampling parameters; provider failures expose only a safe HTTP status. Strict output rejects invented citations and command/tool fields.
 
 ```json
 {
@@ -90,3 +91,5 @@ The fetcher forbids redirects/proxies, resolves and connects only to public IPs,
 The library also provides a bounded repair controller: at most three total validation attempts, formatter/schema/lint failures only, immutable request/evidence/citations/uncertainty, no retries on sample or rights failures, and repeated YAML terminates. It is covered by offline tests and is not yet wired to the production validation CLI.
 
 The Capathy repository no longer vendors capa. Obtain the clean, patched engine path with `python -m capathy runtime-path`; pin its HEAD as `capa_revision`. The rules repository is a separate operator-managed checkout.
+
+A live Claude Haiku 5.5 smoke test generated a PowerShell rule and passed two synthetic positive and three synthetic negative checks. This is a functional smoke test, not a real-corpus accuracy evaluation. Gemini 2.5 access was rejected for this account; Gemini 3.8 requests timed out during the same session.

@@ -23,6 +23,7 @@ func (s Secret) MarshalJSON() ([]byte, error)  { return json.Marshal("[REDACTED]
 
 // Config contains safe defaults. Publication is intentionally disabled in this initial implementation.
 type Config struct {
+	Provider           string `json:"provider"`
 	ModelName          string `json:"model_name"`
 	APIKey             Secret `json:"-"`
 	MaxOutputTokens    int32  `json:"max_output_tokens"`
@@ -31,7 +32,22 @@ type Config struct {
 
 // Load reads an explicitly selected dotenv file; process credentials take precedence over all file credentials.
 func Load(dotenv string, getenv func(string) string) (Config, error) {
-	cfg := Config{ModelName: "gemini-2.5-flash", MaxOutputTokens: 8192, DisablePublication: true}
+	return LoadProvider(dotenv, getenv, "gemini")
+}
+
+// LoadProvider selects credentials for exactly one explicitly chosen model provider.
+func LoadProvider(dotenv string, getenv func(string) string, provider string) (Config, error) {
+	cfg := Config{Provider: provider, ModelName: "gemini-3.8-flash", MaxOutputTokens: 8192, DisablePublication: true}
+	keys := []string{"GOOGLE_API_KEY", "GEMINI_API_KEY"}
+	switch provider {
+	case "gemini":
+	case "claude":
+		cfg.ModelName = "claude-haiku-5-5"
+		cfg.MaxOutputTokens = 4096
+		keys = []string{"ANTHROPIC_API_KEY", "CLAUDE_API_KEY"}
+	default:
+		return cfg, errors.New("unsupported model provider")
+	}
 	vars := map[string]string{}
 	if dotenv != "" {
 		f, err := os.Open(dotenv)
@@ -63,7 +79,7 @@ func Load(dotenv string, getenv func(string) string) (Config, error) {
 		}
 	}
 	for _, source := range []func(string) string{getenv, func(k string) string { return vars[k] }} {
-		for _, key := range []string{"GOOGLE_API_KEY", "GEMINI_API_KEY"} {
+		for _, key := range keys {
 			if value := source(key); value != "" {
 				cfg.APIKey = Secret{value}
 				break
