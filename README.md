@@ -1,8 +1,24 @@
 # Capathy
 
-**Create new [capa](https://github.com/mandiant/capa) capability rules from program evidence.**
+**Create new capa rules from evidence about what a program does.**
 
-Capathy extracts features from PowerShell, Python, and Bash scripts, or imports existing capa results for binaries. A Go agent uses Gemini to draft YAML rules with evidence citations, then checks candidates with capa's formatter, linter, and positive/negative sample tests.
+## What is capa?
+
+[capa](https://github.com/mandiant/capa) is an open-source tool that identifies capabilities in executable files and sandbox reports. It can recognize behaviors such as making HTTP requests, creating processes, or accessing the registry, and show the evidence behind each match.
+
+## What are capa rules?
+
+A capa rule is a YAML description of a capability. It defines patterns of features—such as API calls, strings, or instructions—that must appear together. When those conditions match, capa reports the capability named by the rule. Rules can combine conditions with logic such as `and` and `or`.
+
+For example, a rule could recognize process creation from relevant API calls. Capathy adds script features so a rule can also recognize a direct PowerShell `Invoke-WebRequest` call.
+
+## What does Capathy do?
+
+Capathy helps create new rules through three steps:
+
+1. **Collect evidence:** parse PowerShell, Python, and Bash scripts, or import existing capa JSON results for binaries.
+2. **Draft a rule:** use a Go agent and Gemini to propose YAML rules with citations to the observed evidence.
+3. **Validate and review:** check candidates with capa's formatter, linter, and positive/negative sample tests, then prepare a local review package.
 
 Examples:
 
