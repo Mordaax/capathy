@@ -63,6 +63,14 @@ func FromLocal(ctx context.Context, path, capability string, shareable bool) (re
 		language = "powershell"
 	case ".py":
 		language = "python"
+	case ".js", ".jsx":
+		language = "javascript"
+	case ".ts":
+		language = "typescript"
+	case ".c", ".h":
+		language = "c"
+	case ".cpp", ".cc", ".cxx", ".hpp":
+		language = "cpp"
 	case ".sh":
 		language = "bash"
 	}
@@ -100,5 +108,20 @@ func DecodeRequest(b []byte) (request.RuleRequest, error) {
 	if decoder.Decode(new(any)) != io.EOF {
 		return r, errors.New("trailing request JSON")
 	}
+	return r, r.Validate()
+}
+
+// FromFullEvidence imports full extractor observations, never trusting paths from the document.
+func FromFullEvidence(ctx context.Context, path, capability string) (request.RuleRequest, error) {
+	b, err := ReadFile(ctx, path, 32<<20)
+	if err != nil {
+		return request.RuleRequest{}, err
+	}
+	bundle, err := evidence.ImportFull(b)
+	if err != nil {
+		return request.RuleRequest{}, err
+	}
+	r := request.RuleRequest{Schema: 1, Origin: request.Origin{Kind: "feature-json", ObservedAt: time.Now().UTC()}, Capability: capability, Language: bundle.Format, Samples: []request.SampleRef{{SHA256: bundle.SampleSHA256, Role: "positive", Language: bundle.Format}}, Evidence: bundle.Features}
+	r.ID = r.Key()
 	return r, r.Validate()
 }

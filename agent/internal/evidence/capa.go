@@ -66,14 +66,14 @@ func Import(data []byte) (Bundle, error) {
 		return out, errors.New("capa sample hash, version and rules required")
 	}
 	switch r.Meta.Analysis.Format {
-	case "pe", "elf", "dotnet", "sc32", "sc64", "powershell", "python", "bash":
+	case "pe", "elf", "dotnet", "sc32", "sc64", "powershell", "python", "bash", "javascript", "typescript", "c", "cpp":
 	default:
 		return out, errors.New("unsupported capa format")
 	}
 	out.SampleSHA256 = r.Meta.Sample.SHA256
 	out.CapaVersion = r.Meta.Version
 	out.Format = r.Meta.Analysis.Format
-	if out.Format == "powershell" || out.Format == "python" || out.Format == "bash" {
+	if out.Format == "powershell" || out.Format == "python" || out.Format == "bash" || out.Format == "javascript" || out.Format == "typescript" || out.Format == "c" || out.Format == "cpp" {
 		if len(r.Meta.Analysis.Script) == 0 {
 			return out, errors.New("script results require parser evidence metadata")
 		}

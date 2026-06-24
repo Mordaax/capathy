@@ -167,7 +167,7 @@ func Validate(ctx context.Context, r request.RuleRequest, p proposal.Proposal, o
 			format = "auto"
 		}
 		switch format {
-		case "auto", "pe", "elf", "dotnet", "sc32", "sc64", "powershell", "python", "bash":
+		case "auto", "pe", "elf", "dotnet", "sc32", "sc64", "powershell", "python", "bash", "javascript", "typescript", "c", "cpp":
 		default:
 			report.check("sample format", errors.New("unsupported format"))
 			return report, nil

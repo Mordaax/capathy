@@ -68,7 +68,7 @@ type Diagnostic struct {
 // New constructs an empty document hashed over the original bytes.
 func New(language string, raw []byte) Document {
 	h := sha256.Sum256(raw)
-	return Document{ExtractorVersion: "0.1.0", GrammarVersion: map[string]string{"powershell": "0.38.1", "python": "0.25.0", "bash": "0.25.1"}[language], NormalizationVersion: 1, Schema: Schema, Language: language, SHA256: hex.EncodeToString(h[:]), ByteLength: uint32(len(raw)), Functions: []Function{}, Diagnostics: []Diagnostic{}}
+	return Document{ExtractorVersion: "0.1.0", GrammarVersion: map[string]string{"powershell": "0.38.1", "python": "0.25.0", "bash": "0.25.1", "javascript": "0.23.1", "typescript": "0.23.2", "c": "0.23.4", "cpp": "0.23.4"}[language], NormalizationVersion: 1, Schema: Schema, Language: language, SHA256: hex.EncodeToString(h[:]), ByteLength: uint32(len(raw)), Functions: []Function{}, Diagnostics: []Diagnostic{}}
 }
 func span(start, end, lo, hi uint32) bool { return start >= lo && end <= hi && start < end }
 
@@ -77,7 +77,7 @@ func (d Document) Validate() error {
 	if d.Schema != Schema {
 		return errors.New("unsupported schema")
 	}
-	if d.Language != "powershell" && d.Language != "python" && d.Language != "bash" {
+	if d.Language != "powershell" && d.Language != "python" && d.Language != "bash" && d.Language != "javascript" && d.Language != "typescript" && d.Language != "c" && d.Language != "cpp" {
 		return errors.New("unsupported language")
 	}
 	h, e := hex.DecodeString(d.SHA256)

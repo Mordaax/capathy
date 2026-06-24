@@ -21,7 +21,7 @@ const version = "0.1.0"
 func main() { os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
 func run(args []string, input io.Reader, output, diagnostics io.Writer) int {
 	if len(args) == 1 && args[0] == "--version" {
-		if err := json.NewEncoder(output).Encode(map[string]any{"version": version, "schema": protocol.Schema, "languages": []string{"powershell", "python", "bash"}}); err != nil {
+		if err := json.NewEncoder(output).Encode(map[string]any{"version": version, "schema": protocol.Schema, "languages": []string{"powershell", "python", "bash", "javascript", "typescript", "c", "cpp"}}); err != nil {
 			fmt.Fprintln(diagnostics, "write version:", err)
 			return 3
 		}
@@ -41,7 +41,7 @@ func run(args []string, input io.Reader, output, diagnostics io.Writer) int {
 		fmt.Fprintln(diagnostics, "input is accepted only through stdin")
 		return 2
 	}
-	if *language != "powershell" && *language != "python" && *language != "bash" {
+	if *language != "powershell" && *language != "python" && *language != "bash" && *language != "javascript" && *language != "typescript" && *language != "c" && *language != "cpp" {
 		fmt.Fprintln(diagnostics, "unsupported language")
 		return 2
 	}

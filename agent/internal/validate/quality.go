@@ -78,7 +78,7 @@ func QualityGate(r request.RuleRequest, p proposal.Proposal, lock Lock) error {
 	if !request.ValidHash(lock.SampleManifestHash) || !validRevision(lock.CapaRevision) || !validRevision(lock.RulesRevision) || !validRevision(lock.AgentRevision) {
 		return errors.New("complete pinned tool revisions and sample manifest hash required")
 	}
-	if r.Language == "powershell" || r.Language == "python" || r.Language == "bash" {
+	if r.Language == "powershell" || r.Language == "python" || r.Language == "bash" || r.Language == "javascript" || r.Language == "typescript" || r.Language == "c" || r.Language == "cpp" {
 		if lock.HelperVersion == "" || lock.ScriptSchema != 1 {
 			return errors.New("compatible script helper and schema required")
 		}

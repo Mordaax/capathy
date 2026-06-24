@@ -85,7 +85,7 @@ rule:
     - and:
       - format: powershell
       - script-call: invoke-webrequest
-Use the actual language and observed feature values from the input, not these example values. Binary evidence should use binary features and appropriate scopes. A URL literal is optional when the requested capability is independent of the URL.`
+Use the actual language and observed feature values from the input, not these example values. Binary evidence should use binary features and appropriate scopes. Preserve location address spaces and parent function boundaries: observations in different functions or statements do not establish co-occurrence in a narrower scope. Syntactic source call names do not prove runtime dispatch. A URL literal is optional when the requested capability is independent of the URL.`
 
 // Draft uses bounded output and rejects tool calls, multiple responses and non-schema output.
 func (m *GeminiModel) Draft(ctx context.Context, input DraftInput) (proposal.Proposal, error) {
@@ -130,16 +130,9 @@ func (m *GeminiModel) Draft(ctx context.Context, input DraftInput) (proposal.Pro
 }
 
 func copyEvidence(input []request.EvidenceRef) []request.EvidenceRef {
-	output := append([]request.EvidenceRef(nil), input...)
-	for i := range output {
-		if output[i].Address != nil {
-			value := *output[i].Address
-			output[i].Address = &value
-		}
-		if output[i].Span != nil {
-			span := *output[i].Span
-			output[i].Span = &span
-		}
-	}
+	// Marshal a private deep copy of nested location and span records.
+	encoded, _ := json.Marshal(input)
+	var output []request.EvidenceRef
+	_ = json.Unmarshal(encoded, &output)
 	return output
 }

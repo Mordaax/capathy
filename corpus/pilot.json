@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/mandiant/capa-testfiles",
+  "rules_revision": "21332a057f5be39fa145bc4aea7ae2431ff05fc3",
+  "samples": [
+    {
+      "id": "linux-remote-shell",
+      "path": "7351f8a40c5450557b24622417fc478d.elf_",
+      "sha256": "0423258b94e8a9af58ad63ea493818618de2d8c60cf75ec7980edcaa34dcc919",
+      "revision": "4fa9a0448a1453a80bdcbcefb6dff870f6333b64",
+      "format": "elf",
+      "label": "unclassified",
+      "provenance": "Public Linux remote-shell binary used as the example in the pinned capa reverse-shell rule. Family and in-the-wild provenance are not established.",
+      "expect": {
+        "create reverse shell on Linux": true
+      }
+    },
+    {
+      "id": "microsocks",
+      "path": "microsocks.elf_",
+      "sha256": "4f405550ba8ce619bf5a3547acb7871009d1e51160d4feabdb3b7d827b44e507",
+      "revision": "4fa9a0448a1453a80bdcbcefb6dff870f6333b64",
+      "format": "elf",
+      "label": "benign",
+      "provenance": "Public MicroSocks proxy test binary. Benign utility label describes intended function, not a guarantee of file safety.",
+      "expect": {
+        "create reverse shell on Linux": false
+      }
+    },
+    {
+      "id": "pma-lab-01-01",
+      "path": "Practical Malware Analysis Lab 01-01.exe_",
+      "sha256": "58898bd42c5bd3bf9b1389f0eee5b39cd59180e8370eb9ea838a0b327bd6fe47",
+      "revision": "4fa9a0448a1453a80bdcbcefb6dff870f6333b64",
+      "format": "pe",
+      "label": "malware-lab",
+      "provenance": "Practical Malware Analysis educational malware binary. Not an independently attributed in-the-wild sample.",
+      "expect": {
+        "create reverse shell on Linux": false
+      }
+    }
+  ]
+}

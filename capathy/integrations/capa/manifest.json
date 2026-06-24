@@ -3,13 +3,13 @@
   "repository": "https://github.com/mandiant/capa.git",
   "revision": "2bdf7a4788ffe8696d3eabf7f746ca682eba294b",
   "patch": "patches/script-support.patch",
-  "patch_sha256": "9288521f96391db838818fd7a369f712889a8000ea9ad46e16fb7a2cf33226af",
+  "patch_sha256": "85ce414f03a05b0e375d128a560a31c4f1735643f98f570f4ece91246838625e",
   "overlay": {
     "capa/features/extractors/script/__init__.py": "8c6a7cd233a00404f1c8d281772b043edc8d58e4df37218d8d540323d90302db",
     "capa/features/extractors/script/extractor.py": "16f046a2c92103de8249fcd3e8b34720a83a9c5db2e365e8d0445812eaa34cc0",
-    "capa/features/extractors/script/protocol.py": "5b5e00de1823950f4a022b699b14dbcabbe9461f520fb197bedcfd2af1b4985d",
+    "capa/features/extractors/script/protocol.py": "9db5d280f7e6f1e96bde88783744517a74ad344fe47b5489e50500ebfda2d905",
     "capa/features/script.py": "d64499c516a3aa2e38689f08774f962bdd903e7edd6e15e4a21bf63a0f466fd7"
   },
   "commit_date": "2026-10-24T00:00:00+0000",
-  "runtime_revision": "c64946b19af05c6cbe0ac9427b23e7bfca2c05d5"
+  "runtime_revision": "d5a81293b58b1811a783b1bce7e452dec7e270d2"
 }

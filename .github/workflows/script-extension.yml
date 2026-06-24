@@ -2,9 +2,9 @@ name: Script analysis extension
 
 on:
   pull_request:
-    paths: ['native/**', 'agent/**', 'capathy/**', 'tests/**', 'scripts/**', 'pyproject.toml', 'examples/**', '.github/workflows/script-extension.yml']
+    paths: ['native/**', 'agent/**', 'capathy/**', 'tests/**', 'scripts/**', 'pyproject.toml', 'examples/**', 'corpus/**', '.github/workflows/script-extension.yml']
   push:
-    paths: ['native/**', 'agent/**', 'capathy/**', 'tests/**', 'scripts/**', 'pyproject.toml', 'examples/**', '.github/workflows/script-extension.yml']
+    paths: ['native/**', 'agent/**', 'capathy/**', 'tests/**', 'scripts/**', 'pyproject.toml', 'examples/**', 'corpus/**', '.github/workflows/script-extension.yml']
   workflow_dispatch:
 
 permissions:

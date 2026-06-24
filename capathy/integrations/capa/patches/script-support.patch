@@ -1,5 +1,5 @@
 diff --git a/capa/capabilities/static.py b/capa/capabilities/static.py
-index 68b5245c..64ab6ad8 100644
+index 68b5245..64ab6ad 100644
 --- a/capa/capabilities/static.py
 +++ b/capa/capabilities/static.py
 @@ -16,7 +16,7 @@ import time
@@ -132,7 +132,7 @@ index 68b5245c..64ab6ad8 100644
 +    _, matches = ruleset.match(Scope.FUNCTION, features, fh.address)
 +    return CodeCapabilities(matches, {}, {}, len(features), dict(statements))
 diff --git a/capa/features/common.py b/capa/features/common.py
-index fa2e29f9..2b8c3c10 100644
+index fa2e29f..10cb7ba 100644
 --- a/capa/features/common.py
 +++ b/capa/features/common.py
 @@ -93,6 +93,9 @@ class Result:
@@ -153,7 +153,7 @@ index fa2e29f9..2b8c3c10 100644
 +FORMAT_POWERSHELL = "powershell"
 +FORMAT_PYTHON = "python"
 +FORMAT_BASH = "bash"
-+SCRIPT_FORMATS = (FORMAT_POWERSHELL, FORMAT_PYTHON, FORMAT_BASH)
++SCRIPT_FORMATS = (FORMAT_POWERSHELL, FORMAT_PYTHON, FORMAT_BASH, "javascript", "typescript", "c", "cpp")
 +VALID_FORMAT = (FORMAT_PE, FORMAT_ELF, FORMAT_DOTNET, *SCRIPT_FORMATS)
  # internal only, not to be used in rules
  FORMAT_AUTO = "auto"
@@ -167,7 +167,7 @@ index fa2e29f9..2b8c3c10 100644
      FORMAT_SC64,
      FORMAT_PE,
 diff --git a/capa/features/extractors/base_extractor.py b/capa/features/extractors/base_extractor.py
-index 10841722..c1c94107 100644
+index 1084172..c1c9410 100644
 --- a/capa/features/extractors/base_extractor.py
 +++ b/capa/features/extractors/base_extractor.py
 @@ -521,3 +521,36 @@ def ThreadFilter(extractor: DynamicFeatureExtractor, threads: set[Address]) -> D
@@ -208,7 +208,7 @@ index 10841722..c1c94107 100644
 +    def extract_insn_features(self, fh, bbh, ih):
 +        return iter(())
 diff --git a/capa/features/extractors/null.py b/capa/features/extractors/null.py
-index f44530c2..4f14a7ae 100644
+index f44530c..4f14a7a 100644
 --- a/capa/features/extractors/null.py
 +++ b/capa/features/extractors/null.py
 @@ -12,7 +12,7 @@
@@ -257,7 +257,7 @@ index f44530c2..4f14a7ae 100644
 +        for address, feature in sh.inner.features:
 +            yield feature, address
 diff --git a/capa/features/freeze/__init__.py b/capa/features/freeze/__init__.py
-index 728b2b78..816ab6bf 100644
+index 728b2b7..816ab6b 100644
 --- a/capa/features/freeze/__init__.py
 +++ b/capa/features/freeze/__init__.py
 @@ -34,11 +34,13 @@ from capa.features.extractors.base_extractor import (
@@ -385,7 +385,7 @@ index 728b2b78..816ab6bf 100644
  
      if doc["flavor"] == "static":
 diff --git a/capa/features/freeze/features.py b/capa/features/freeze/features.py
-index 151964e5..568f8f43 100644
+index 151964e..568f8f4 100644
 --- a/capa/features/freeze/features.py
 +++ b/capa/features/freeze/features.py
 @@ -19,6 +19,7 @@ from pydantic import Field, BaseModel, ConfigDict
@@ -463,7 +463,7 @@ index 151964e5..568f8f43 100644
          ArchFeature,
          FormatFeature,
 diff --git a/capa/helpers.py b/capa/helpers.py
-index 6d723c37..d4cc2f36 100644
+index 6d723c3..d6ee457 100644
 --- a/capa/helpers.py
 +++ b/capa/helpers.py
 @@ -222,7 +222,11 @@ def get_format_from_report(sample: Path) -> str:
@@ -471,8 +471,8 @@ index 6d723c37..d4cc2f36 100644
  def get_format_from_extension(sample: Path) -> str:
      format_ = FORMAT_UNKNOWN
 -    if sample.name.endswith(EXTENSIONS_SHELLCODE_32):
-+    if sample.suffix.lower() in (".ps1", ".psm1", ".py", ".sh", ".bash"):
-+        format_ = {".ps1": "powershell", ".psm1": "powershell", ".py": "python", ".sh": "bash", ".bash": "bash"}[
++    if sample.suffix.lower() in (".ps1", ".psm1", ".py", ".sh", ".bash", ".js", ".jsx", ".ts", ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp"):
++        format_ = {".ps1": "powershell", ".psm1": "powershell", ".py": "python", ".sh": "bash", ".bash": "bash", ".js":"javascript", ".jsx":"javascript", ".ts":"typescript", ".c":"c", ".h":"c", ".cpp":"cpp", ".cc":"cpp", ".cxx":"cpp", ".hpp":"cpp"}[
 +            sample.suffix.lower()
 +        ]
 +    elif sample.name.endswith(EXTENSIONS_SHELLCODE_32):
@@ -490,7 +490,7 @@ index 6d723c37..d4cc2f36 100644
      for feature, _ in extract_format(buf):
          if feature == Format(FORMAT_PE):
 diff --git a/capa/loader.py b/capa/loader.py
-index bfa2a729..eafb521a 100644
+index bfa2a72..eafb521 100644
 --- a/capa/loader.py
 +++ b/capa/loader.py
 @@ -58,10 +58,12 @@ from capa.features.extractors.base_extractor import (
@@ -566,7 +566,7 @@ index bfa2a729..eafb521a 100644
      bbs_by_function: dict[Address, list[Address]] = {}
      for f in extractor.get_functions():
 diff --git a/capa/main.py b/capa/main.py
-index 837974f5..254e0879 100644
+index 837974f..bbae01c 100644
 --- a/capa/main.py
 +++ b/capa/main.py
 @@ -52,6 +52,7 @@ from capa.loader import (
@@ -577,17 +577,19 @@ index 837974f5..254e0879 100644
      BACKEND_DRAKVUF,
      BACKEND_BINEXPORT2,
  )
-@@ -268,6 +269,9 @@ def install_common_args(parser, wanted=None):
+@@ -268,6 +269,11 @@ def install_common_args(parser, wanted=None):
      if "format" in wanted:
          formats = [
              (FORMAT_AUTO, "(default) detect file type automatically"),
 +            ("powershell", "PowerShell source (native script helper)"),
 +            ("python", "Python source (native script helper)"),
 +            ("bash", "Bash source (native script helper)"),
++            ("javascript", "JavaScript source"), ("typescript", "TypeScript source"),
++            ("c", "C source"), ("cpp", "C++ source"),
              (FORMAT_PE, "Windows PE file"),
              (FORMAT_DOTNET, ".NET PE file"),
              (FORMAT_ELF, "Executable and Linkable Format"),
-@@ -293,6 +297,7 @@ def install_common_args(parser, wanted=None):
+@@ -293,6 +299,7 @@ def install_common_args(parser, wanted=None):
      if "backend" in wanted:
          backends = [
              (BACKEND_AUTO, "(default) detect appropriate backend automatically"),
@@ -595,18 +597,18 @@ index 837974f5..254e0879 100644
              (BACKEND_VIV, "vivisect"),
              (BACKEND_IDA, "IDA via idalib"),
              (BACKEND_PEFILE, "pefile (file features only)"),
-@@ -580,6 +585,9 @@ def get_backend_from_cli(args, input_format: str) -> str:
+@@ -580,6 +587,9 @@ def get_backend_from_cli(args, input_format: str) -> str:
      if args.backend != BACKEND_AUTO:
          return args.backend
  
-+    if input_format in ("powershell", "python", "bash"):
++    if input_format in ("powershell", "python", "bash", "javascript", "typescript", "c", "cpp"):
 +        return BACKEND_SCRIPT
 +
      if input_format == FORMAT_CAPE:
          return BACKEND_CAPE
  
 diff --git a/capa/render/proto/__init__.py b/capa/render/proto/__init__.py
-index c3908e66..53143248 100644
+index c3908e6..5314324 100644
 --- a/capa/render/proto/__init__.py
 +++ b/capa/render/proto/__init__.py
 @@ -32,6 +32,7 @@ $ protoc.exe --python_out=. --mypy_out=. <path_to_proto> (e.g. capa/render/proto
@@ -714,7 +716,7 @@ index c3908e66..53143248 100644
          return frzf.OSFeature(os=ff.os, description=ff.description or None)
      elif type_ == "arch":
 diff --git a/capa/render/proto/capa.proto b/capa/render/proto/capa.proto
-index b0723474..5a231940 100644
+index b072347..5a23194 100644
 --- a/capa/render/proto/capa.proto
 +++ b/capa/render/proto/capa.proto
 @@ -160,9 +160,31 @@ message FeatureNode {
@@ -774,7 +776,7 @@ index b0723474..5a231940 100644
  
  message StaticFeatureCounts {
 diff --git a/capa/render/proto/capa_pb2.py b/capa/render/proto/capa_pb2.py
-index b581c9ea..30ee7edc 100644
+index b581c9e..30ee7ed 100644
 --- a/capa/render/proto/capa_pb2.py
 +++ b/capa/render/proto/capa_pb2.py
 @@ -2,7 +2,7 @@
@@ -1037,7 +1039,7 @@ index b581c9ea..30ee7edc 100644
 +  _globals['_NUMBER']._serialized_end=9671
  # @@protoc_insertion_point(module_scope)
 diff --git a/capa/render/proto/capa_pb2.pyi b/capa/render/proto/capa_pb2.pyi
-index 98420a29..0c3c4106 100644
+index 98420a2..0c3c410 100644
 --- a/capa/render/proto/capa_pb2.pyi
 +++ b/capa/render/proto/capa_pb2.pyi
 @@ -95,6 +95,7 @@ class _ScopeEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumType
@@ -1223,7 +1225,7 @@ index 98420a29..0c3c4106 100644
  global___StaticAnalysis = StaticAnalysis
  
 diff --git a/capa/render/result_document.py b/capa/render/result_document.py
-index d1b8005e..ac25b57c 100644
+index d1b8005..ac25b57 100644
 --- a/capa/render/result_document.py
 +++ b/capa/render/result_document.py
 @@ -57,6 +57,7 @@ class BasicBlockLayout(Model):
@@ -1252,7 +1254,7 @@ index d1b8005e..ac25b57c 100644
  
          node = node_from_capa(result.statement)
 diff --git a/capa/rules/__init__.py b/capa/rules/__init__.py
-index ef4e372c..57fa5c6c 100644
+index ef4e372..57fa5c6 100644
 --- a/capa/rules/__init__.py
 +++ b/capa/rules/__init__.py
 @@ -40,6 +40,7 @@ import capa.features.com
@@ -1408,7 +1410,7 @@ index ef4e372c..57fa5c6c 100644
              # "uncommon numbers": 7 (placeholder for logic above)
              #
 diff --git a/scripts/lint.py b/scripts/lint.py
-index 9821d6d7..ae6fce4c 100644
+index 9821d6d..ae6fce4 100644
 --- a/scripts/lint.py
 +++ b/scripts/lint.py
 @@ -47,6 +47,7 @@ import capa.engine

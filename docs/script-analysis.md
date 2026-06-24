@@ -19,3 +19,8 @@ Addresses are original-file byte offsets, including BOM-marked UTF-16. JSON resu
 Input is capped at 16 MiB and helper output at 32 MiB, with bounded subprocess pipes and deadlines. Dynamic invocation, reflection, computed commands, ambiguous aliases and malformed syntax may produce diagnostics instead of concrete targets.
 
 The bundled rules and samples are synthetic demonstrations. They verify the analysis pipeline and do not establish real-world detection quality. See the [implementation ledger](implementation/2026-10-24-progress.md) for outstanding release gates.
+
+
+## Additional source formats
+
+The native helper and capa integration also accept `javascript`, `typescript`, `c`, and `cpp`. These adapters extract syntactically named calls, simple literals, functions, and control structures. They do not resolve receiver types, macro expansions, computed calls, or whole-program data flow. `.h` defaults to C; TSX is unsupported. For directory inventory and explicit candidate call links, use `python -m capathy analyze-project DIRECTORY --out out/project.json`. See [analysis workflows](analysis-workflows.md) for complete export, limits, and examples.

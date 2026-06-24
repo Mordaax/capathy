@@ -48,7 +48,7 @@ func ImportScript(data []byte) (Bundle, error) {
 		return out, errors.New("script evidence requires schema 1, source hash, byte length and extractor version")
 	}
 	switch document.Language {
-	case "powershell", "python", "bash":
+	case "powershell", "python", "bash", "javascript", "typescript", "c", "cpp":
 	default:
 		return out, errors.New("unsupported script language")
 	}
@@ -111,7 +111,9 @@ func ImportScript(data []byte) (Bundle, error) {
 					kind += "/" + feature.Access
 				}
 				address := feature.Start
-				e := request.EvidenceRef{SampleSHA256: document.SHA256, Kind: kind, Value: value, Address: &address, Span: &request.Span{Start: feature.Start, End: feature.End}, CapaVersion: out.CapaVersion, ExtractorVersion: document.ExtractorVersion}
+				functionLocation := request.Location{Type: "file", Value: json.RawMessage(fmt.Sprint(function.Start))}
+				statementLocation := request.StatementLocation{Address: request.Location{Type: "file", Value: json.RawMessage(fmt.Sprint(statement.Start))}, Ordinal: statement.Ordinal}
+				e := request.EvidenceRef{Scope: "statement", Function: &functionLocation, Statement: &statementLocation, SampleSHA256: document.SHA256, Kind: kind, Value: value, Address: &address, Span: &request.Span{Start: feature.Start, End: feature.End}, CapaVersion: out.CapaVersion, ExtractorVersion: document.ExtractorVersion}
 				b, _ := json.Marshal(e)
 				e.ID = "e-" + request.Hash(b)[:24]
 				if !seen[e.ID] {

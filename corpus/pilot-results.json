@@ -1,0 +1,153 @@
+{
+  "schema": 1,
+  "kind": "capathy.corpus-evaluation",
+  "manifest_sha256": "1d22caf94e21b6584b27acdbdd4c6a78208a887550c34599eeadcc7fc8a9c708",
+  "rules_revision": "21332a057f5be39fa145bc4aea7ae2431ff05fc3",
+  "runtime_revision": "d5a81293b58b1811a783b1bce7e452dec7e270d2",
+  "samples": [
+    {
+      "id": "linux-remote-shell",
+      "sha256": "0423258b94e8a9af58ad63ea493818618de2d8c60cf75ec7980edcaa34dcc919",
+      "label": "unclassified",
+      "provenance": "Public Linux remote-shell binary used as the example in the pinned capa reverse-shell rule. Family and in-the-wild provenance are not established.",
+      "expected": {
+        "create reverse shell on Linux": true
+      },
+      "observed": {
+        "create reverse shell on Linux": true
+      },
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "tn": 0,
+        "fn": 0
+      },
+      "matched_rules": [
+        "act as TCP client",
+        "change file permission on Linux",
+        "check file permission on Linux",
+        "communicate with kernel module via Netlink socket on Linux",
+        "connect TCP socket",
+        "connect socket",
+        "contain loop",
+        "contain obfuscated stackstrings",
+        "create TCP socket",
+        "create directory",
+        "create or open file",
+        "create process on Linux",
+        "create reverse shell on Linux",
+        "create thread",
+        "delay execution",
+        "delete directory",
+        "delete file",
+        "delete file on Linux",
+        "download and write a file",
+        "duplicate stdin and stdout",
+        "encode data using Base64",
+        "encrypt data using RC4 PRGA",
+        "enumerate files on Linux",
+        "execute command",
+        "execute shell command received from socket on Linux",
+        "get CPU information",
+        "get Linux distribution",
+        "get current PID on Linux",
+        "get current process file path",
+        "get current user on Linux",
+        "get file attributes",
+        "get hostname",
+        "get kernel version",
+        "get memory information",
+        "get password database entry on Linux",
+        "get socket status",
+        "lock file",
+        "move file",
+        "persist via .desktop autostart",
+        "persist via rc script",
+        "persist via shell profile or rc file",
+        "query environment variable",
+        "read and send data from client to server",
+        "read file on Linux",
+        "receive and write data from server to client",
+        "receive data",
+        "receive data on socket",
+        "reference Base64 string",
+        "resolve DNS",
+        "send data",
+        "send data on socket",
+        "set current directory",
+        "set socket configuration",
+        "terminate process",
+        "terminate process via kill",
+        "write and execute a file",
+        "write file on Linux"
+      ]
+    },
+    {
+      "id": "microsocks",
+      "sha256": "4f405550ba8ce619bf5a3547acb7871009d1e51160d4feabdb3b7d827b44e507",
+      "label": "benign",
+      "provenance": "Public MicroSocks proxy test binary. Benign utility label describes intended function, not a guarantee of file safety.",
+      "expected": {
+        "create reverse shell on Linux": false
+      },
+      "observed": {
+        "create reverse shell on Linux": false
+      },
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "tn": 1,
+        "fn": 0
+      },
+      "matched_rules": [
+        "connect socket",
+        "contain loop",
+        "create thread",
+        "delay execution",
+        "read file on Linux",
+        "receive data",
+        "receive data on socket",
+        "resolve DNS",
+        "set socket configuration",
+        "write file on Linux"
+      ]
+    },
+    {
+      "id": "pma-lab-01-01",
+      "sha256": "58898bd42c5bd3bf9b1389f0eee5b39cd59180e8370eb9ea838a0b327bd6fe47",
+      "label": "malware-lab",
+      "provenance": "Practical Malware Analysis educational malware binary. Not an independently attributed in-the-wild sample.",
+      "expected": {
+        "create reverse shell on Linux": false
+      },
+      "observed": {
+        "create reverse shell on Linux": false
+      },
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "tn": 1,
+        "fn": 0
+      },
+      "matched_rules": [
+        "contain loop",
+        "copy file",
+        "create or open file",
+        "enumerate PE sections",
+        "enumerate files on Windows",
+        "enumerate files recursively",
+        "read file via mapping",
+        "resolve function by parsing PE exports",
+        "terminate process"
+      ]
+    }
+  ],
+  "counts": {
+    "tp": 1,
+    "fp": 0,
+    "tn": 2,
+    "fn": 0
+  },
+  "passed": true,
+  "limitations": "Pilot capability regression only; not malware classification accuracy or proof of generalization."
+}

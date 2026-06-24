@@ -16,7 +16,7 @@ For example, a rule could recognize process creation from relevant API calls. Ca
 
 Capathy helps create new rules through three steps:
 
-1. **Collect evidence:** parse PowerShell, Python, and Bash scripts, or import existing capa JSON results for binaries.
+1. **Collect evidence:** extract binary features, parse source files in seven languages, or inspect a source directory.
 2. **Draft a rule:** use a Go agent with Gemini or Claude to propose YAML rules with citations to the observed evidence.
 3. **Validate and review:** check candidates with capa's formatter, linter, and positive/negative sample tests, then prepare a local review package.
 
@@ -27,7 +27,8 @@ Examples:
 | PowerShell `Invoke-WebRequest` | Detect a script making a web request |
 | Python `requests.get(...)` | Detect HTTP requests through the requests library |
 | Bash `curl "$url"` | Detect a shell script invoking curl |
-| Binary capa JSON | Describe a capability using observed APIs, strings, and existing matches |
+| PE or ELF binary | Create rules from APIs, strings, and instructions, including unmatched features |
+| JavaScript/TypeScript or C/C++ | Detect syntactically named calls such as `fetch` or `std::puts` |
 
 Scripts are parsed without executing them. Structural matching distinguishes actual calls from command names appearing only in comments or strings.
 
@@ -89,14 +90,22 @@ rule:
       - script-call: invoke-webrequest
 ```
 
-For Python or Bash, use `-f python` or `-f bash` with your source file. For binaries, import existing capa JSON directly with `agent draft --capa-json`.
+For binaries or source files, collect complete observations without needing an existing matching rule:
+
+```sh
+.venv/bin/python -m capathy export-features sample.elf --out out/features.json
+.venv/bin/python -m capathy agent draft --evidence-json out/features.json \
+  --capability 'describe the observed capability' --out out/request.json
+```
+
+Use `analyze-project ./src --out out/project.json` for a source inventory and candidate call links. Optional `setup-ghidra` and `decompile sample.elf --out out/decompiled.json` produce address-linked ELF pseudocode (requires JDK 25+). See [analysis examples and corpus evaluation](docs/analysis-workflows.md).
 
 ## Validate and review
 
 Candidates must pass formatting, thorough linting, evidence checks, and tests against a reviewed corpus: at least one real positive, two benign negatives, and one adversarial negative. Passing candidates can produce a local review package; GitHub rule publication is disabled.
 
-The bundled samples are synthetic demonstrations. Real-world detection accuracy and live model quality remain unevaluated.
+The public three-binary pilot checks one reverse-shell capability; it is not a general accuracy benchmark. Bundled source examples are synthetic. Model-generated rules still need independent validation.
 
-See [agent commands and validation](agent/README.md), [script analysis](docs/script-analysis.md), [implementation status](docs/implementation/2026-10-24-progress.md), and [history conventions](HISTORY.md).
+See [agent commands and validation](agent/README.md), [script analysis](docs/script-analysis.md), [implementation status](docs/implementation/2026-10-25-analysis-expansion.md), and [history conventions](HISTORY.md).
 
 Apache-2.0; upstream attribution is retained in [NOTICE](NOTICE) and [LICENSE.txt](LICENSE.txt).

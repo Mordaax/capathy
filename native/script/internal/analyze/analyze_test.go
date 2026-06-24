@@ -272,3 +272,64 @@ func TestPythonSignedInteger(t *testing.T) {
 		t.Fatal("missing signed integer")
 	}
 }
+
+func TestAdditionalSourceLanguages(t *testing.T) {
+	for _, tc := range []struct{ lang, code, call string }{
+		{"javascript", "function fetchIt() { fetch(\"https://example.test\"); }", "fetch"},
+		{"javascript", "const f = () => fetch(\"url\");", "fetch"},
+		{"typescript", "function fetchIt(url: string): void { fetch(url); }", "fetch"},
+		{"c", "int main(void) { puts(\"hello\"); return 0; }", "puts"},
+		{"cpp", "int main() { std::puts(\"hello\"); return 0; }", "std::puts"},
+	} {
+		t.Run(tc.lang, func(t *testing.T) {
+			d, err := Analyze(context.Background(), tc.lang, []byte(tc.code))
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, f := range d.Functions {
+				for _, s := range f.Statements {
+					for _, e := range s.Features {
+						if e.Kind == "script-call" && e.Value == tc.call {
+							found = true
+						}
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("missing call %s: %+v", tc.call, d)
+			}
+		})
+	}
+}
+
+func TestNestedSourceFunctionBoundaries(t *testing.T) {
+	for _, tc := range []struct{ lang, code string }{
+		{"javascript", `function caller() { function* nested() { send("secret"); } fetch("url"); }`},
+		{"cpp", `int main() { auto f = []() { send("secret"); }; puts("hello"); }`},
+	} {
+		d, err := Analyze(context.Background(), tc.lang, []byte(tc.code))
+		if err != nil {
+			t.Fatal(err)
+		}
+		inner, outer := false, false
+		for _, f := range d.Functions {
+			calls := map[string]bool{}
+			for _, s := range f.Statements {
+				for _, e := range s.Features {
+					if e.Kind == "script-call" {
+						calls[e.Value.(string)] = true
+					}
+				}
+			}
+			if calls["send"] && (calls["fetch"] || calls["puts"]) {
+				t.Fatalf("%s conflated nested function: %+v", tc.lang, f)
+			}
+			inner = inner || calls["send"]
+			outer = outer || calls["fetch"] || calls["puts"]
+		}
+		if !inner || !outer {
+			t.Fatalf("lost source observations: %+v", d)
+		}
+	}
+}

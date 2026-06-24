@@ -105,7 +105,7 @@ func (p Proposal) Validate(r request.RuleRequest) error {
 	if err != nil {
 		return err
 	}
-	if r.Language == "powershell" || r.Language == "python" || r.Language == "bash" {
+	if r.Language == "powershell" || r.Language == "python" || r.Language == "bash" || r.Language == "javascript" || r.Language == "typescript" || r.Language == "c" || r.Language == "cpp" {
 		if !containsFormat(rule.Rule.Features, r.Language) {
 			return errors.New("script rule must explicitly constrain its format")
 		}

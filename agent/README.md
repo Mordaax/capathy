@@ -93,3 +93,6 @@ The library also provides a bounded repair controller: at most three total valid
 The Capathy repository no longer vendors capa. Obtain the clean, patched engine path with `python -m capathy runtime-path`; pin its HEAD as `capa_revision`. The rules repository is a separate operator-managed checkout.
 
 A live Claude Haiku 5.5 smoke test generated a PowerShell rule and passed two synthetic positive and three synthetic negative checks. This is a functional smoke test, not a real-corpus accuracy evaluation. Gemini 2.5 access was rejected for this account; Gemini 3.8 requests timed out during the same session.
+
+
+Full observations can be collected with `python -m capathy export-features SAMPLE --out out/features.json` and imported using `draft --evidence-json out/features.json --capability '...' --out out/request.json`. This avoids the existing-match limitation of binary `--capa-json`. Location address spaces and parent function/block scopes remain attached to citations; script exports retain original byte spans and statement identities. Source formats also include JavaScript, TypeScript, C and C++. See [analysis workflows](../docs/analysis-workflows.md) for project inventories, optional Ghidra context and the pinned corpus pilot.

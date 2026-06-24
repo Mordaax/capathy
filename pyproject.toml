@@ -22,7 +22,7 @@ include = ["capathy"]
 namespaces = false
 
 [tool.setuptools.package-data]
-capathy = ["integrations/capa/manifest.json", "integrations/capa/patches/*.patch", "integrations/capa/overlay/**/*.py", "integrations/capa/README.md"]
+capathy = ["ghidra/*.java", "integrations/capa/manifest.json", "integrations/capa/patches/*.patch", "integrations/capa/overlay/**/*.py", "integrations/capa/README.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

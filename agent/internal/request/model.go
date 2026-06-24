@@ -37,16 +37,33 @@ type Span struct {
 	End   uint64 `json:"end_byte"`
 }
 
+// Location retains the extractor address space, including managed token offsets.
+type Location struct {
+	Type  string          `json:"type"`
+	Value json.RawMessage `json:"value"`
+}
+
+type StatementLocation struct {
+	Address Location `json:"address"`
+	Ordinal uint64   `json:"ordinal"`
+}
+
 // EvidenceRef is a stable citation to independently collected capa evidence.
 type EvidenceRef struct {
-	ID               string  `json:"id"`
-	SampleSHA256     string  `json:"sample_sha256"`
-	Kind             string  `json:"kind"`
-	Value            string  `json:"value"`
-	Address          *uint64 `json:"address,omitempty"`
-	Span             *Span   `json:"span,omitempty"`
-	CapaVersion      string  `json:"capa_version"`
-	ExtractorVersion string  `json:"extractor_version,omitempty"`
+	ID               string             `json:"id"`
+	Statement        *StatementLocation `json:"statement,omitempty"`
+	Scope            string             `json:"scope,omitempty"`
+	Location         *Location          `json:"location,omitempty"`
+	Function         *Location          `json:"function,omitempty"`
+	BasicBlock       *Location          `json:"basic_block,omitempty"`
+	SampleSHA256     string             `json:"sample_sha256"`
+	Kind             string             `json:"kind"`
+	Value            string             `json:"value"`
+	Address          *uint64            `json:"address,omitempty"`
+	Span             *Span              `json:"span,omitempty"`
+	CapaVersion      string             `json:"capa_version"`
+	RuntimeRevision  string             `json:"runtime_revision,omitempty"`
+	ExtractorVersion string             `json:"extractor_version,omitempty"`
 }
 
 // RuleRequest is the schema 1 request envelope. Only manual requests may carry local paths.
@@ -76,14 +93,14 @@ func (r RuleRequest) Validate() error {
 		return errors.New("invalid request schema, identity or capability")
 	}
 	switch r.Origin.Kind {
-	case "manual", "capa-json", "issue", "feed":
+	case "manual", "capa-json", "feature-json", "issue", "feed":
 	default:
 		return errors.New("unsupported origin")
 	}
 	if len(r.Samples) > 1000 || len(r.Evidence) > 100000 || len(r.Sources) > 100 {
 		return errors.New("request count limit exceeded")
 	}
-	if r.Language != "" && r.Language != "powershell" && r.Language != "python" && r.Language != "bash" && r.Language != "pe" && r.Language != "elf" && r.Language != "dotnet" {
+	if r.Language != "" && r.Language != "powershell" && r.Language != "python" && r.Language != "bash" && r.Language != "pe" && r.Language != "elf" && r.Language != "dotnet" && r.Language != "sc32" && r.Language != "sc64" && r.Language != "javascript" && r.Language != "typescript" && r.Language != "c" && r.Language != "cpp" {
 		return errors.New("unsupported language")
 	}
 	samples := map[string]bool{}

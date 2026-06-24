@@ -20,7 +20,7 @@ from typing import Any, TypeGuard
 
 MAX_INPUT = 16 * 1024 * 1024
 MAX_OUTPUT = 32 * 1024 * 1024
-LANGUAGES = ("powershell", "python", "bash")
+LANGUAGES = ("powershell", "python", "bash", "javascript", "typescript", "c", "cpp")
 STRUCTURES = {
     "assignment",
     "pipeline",

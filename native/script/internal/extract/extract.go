@@ -160,10 +160,16 @@ func (w *walker) diagnostic(n *sitter.Node, code, msg string) {
 	w.doc.Diagnostics = append(w.doc.Diagnostics, protocol.Diagnostic{Code: code, Message: msg, StartByte: w.offset(n.StartByte()), EndByte: w.offset(n.EndByte())})
 }
 func (w *walker) isFunction(n *sitter.Node) bool {
-	return n.Kind() == "function_definition" || n.Kind() == "function_statement"
+	return n.Kind() == "function_definition" || n.Kind() == "function_statement" || n.Kind() == "function_declaration" || n.Kind() == "method_definition" || n.Kind() == "arrow_function" || n.Kind() == "function_expression" || n.Kind() == "generator_function" || n.Kind() == "generator_function_declaration" || n.Kind() == "lambda_expression"
 }
 func (w *walker) functionName(n *sitter.Node) string {
 	name := n.ChildByFieldName("name")
+	if name == nil && (w.lang == "c" || w.lang == "cpp") {
+		name = n.ChildByFieldName("declarator")
+		for name != nil && name.ChildByFieldName("declarator") != nil {
+			name = name.ChildByFieldName("declarator")
+		}
+	}
 	if name != nil {
 		return w.text(name)
 	}
@@ -182,6 +188,8 @@ func (w *walker) isStatement(n *sitter.Node) bool {
 		return k == "pipeline" || k == "if_statement" || k == "foreach_statement" || k == "for_statement" || k == "while_statement" || k == "do_statement" || k == "try_statement" || k == "switch_statement" || k == "return_statement" || k == "throw_statement"
 	case "python":
 		return k == "expression_statement" || k == "return_statement" || k == "raise_statement" || k == "import_statement" || k == "import_from_statement" || k == "if_statement" || k == "for_statement" || k == "while_statement" || k == "try_statement" || k == "with_statement" || k == "assert_statement" || k == "delete_statement"
+	case "javascript", "typescript", "c", "cpp":
+		return k == "call_expression" || k == "expression_statement" || k == "return_statement" || k == "lexical_declaration" || k == "variable_declaration" || k == "declaration" || k == "if_statement" || k == "for_statement" || k == "while_statement" || k == "do_statement" || k == "try_statement" || k == "throw_statement" || k == "switch_statement"
 	case "bash":
 		return k == "command" || k == "pipeline" || k == "variable_assignment" || k == "if_statement" || k == "for_statement" || k == "while_statement" || k == "case_statement" || k == "redirected_statement"
 	}
@@ -290,8 +298,10 @@ func (w *walker) features(root, n *sitter.Node, s *protocol.Statement, depth int
 		w.powerShellFeature(n, s)
 	} else if w.lang == "python" {
 		w.pythonFeature(n, s)
-	} else {
+	} else if w.lang == "bash" {
 		w.bashFeature(n, s)
+	} else {
+		w.sourceFeature(n, s)
 	}
 	if k == "comment" {
 		return nil
@@ -622,5 +632,55 @@ func (w *walker) number(n *sitter.Node, s *protocol.Statement) {
 	}
 	if err == nil {
 		w.add(s, n, "number", v, "", "direct")
+	}
+}
+
+// sourceName describes a syntactically named call. It does not infer imports, receiver types or runtime targets.
+func (w *walker) sourceName(n *sitter.Node) (string, bool) {
+	if n == nil {
+		return "", false
+	}
+	switch n.Kind() {
+	case "identifier", "field_identifier", "type_identifier":
+		return w.text(n), true
+	case "member_expression", "field_expression":
+		object := n.ChildByFieldName("object")
+		if object == nil {
+			object = n.ChildByFieldName("argument")
+		}
+		member := n.ChildByFieldName("property")
+		if member == nil {
+			member = n.ChildByFieldName("field")
+		}
+		prefix, ok := w.sourceName(object)
+		if !ok || member == nil || member.Kind() == "computed_property_name" {
+			return "", false
+		}
+		return prefix + "." + w.text(member), true
+	case "qualified_identifier":
+		text := w.text(n)
+		if !strings.ContainsAny(text, "()<>{}[] ") {
+			return text, true
+		}
+	}
+	return "", false
+}
+func (w *walker) sourceFeature(n *sitter.Node, s *protocol.Statement) {
+	switch n.Kind() {
+	case "call_expression":
+		target := n.ChildByFieldName("function")
+		value, ok := w.sourceName(target)
+		if !ok {
+			w.diagnostic(n, "dynamic-call", "computed, indirect or templated call target is unresolved")
+			return
+		}
+		w.add(s, target, "script-call", value, "", "direct")
+	case "string", "string_literal":
+		raw := w.text(n)
+		if len(raw) >= 2 && (raw[0] == '\'' || raw[0] == '"') && raw[0] == raw[len(raw)-1] && !strings.ContainsAny(raw, "\\\n\r") {
+			w.add(s, n, "string", raw[1:len(raw)-1], "", "direct")
+		}
+	case "number", "number_literal":
+		w.number(n, s)
 	}
 }

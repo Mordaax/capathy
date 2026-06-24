@@ -73,6 +73,7 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 func draft(ctx context.Context, args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("draft", flag.ContinueOnError)
 	sample := flags.String("sample", "", "operator-owned sample path (hash only; never executed)")
+	fullJSON := flags.String("evidence-json", "", "complete capathy export-features JSON")
 	capaJSON := flags.String("capa-json", "", "existing capa JSON including parser metadata for scripts")
 	requestPath := flags.String("request", "", "normalized request JSON")
 	capability := flags.String("capability", "", "capability to investigate")
@@ -89,13 +90,13 @@ func draft(ctx context.Context, args []string, out io.Writer) error {
 	}
 	_ = dryRun
 	selected := 0
-	for _, path := range []string{*sample, *capaJSON, *requestPath} {
+	for _, path := range []string{*sample, *capaJSON, *fullJSON, *requestPath} {
 		if path != "" {
 			selected++
 		}
 	}
 	if selected != 1 {
-		return errors.New("select exactly one of --sample, --capa-json or --request")
+		return errors.New("select exactly one of --sample, --capa-json, --evidence-json or --request")
 	}
 	var r request.RuleRequest
 	var err error
@@ -104,6 +105,8 @@ func draft(ctx context.Context, args []string, out io.Writer) error {
 		if err == nil {
 			r.Samples[0].Real = *real
 		}
+	} else if *fullJSON != "" {
+		r, err = intake.FromFullEvidence(ctx, *fullJSON, *capability)
 	} else if *capaJSON != "" {
 		r, err = intake.FromCapaResult(ctx, *capaJSON, *capability)
 	} else {
