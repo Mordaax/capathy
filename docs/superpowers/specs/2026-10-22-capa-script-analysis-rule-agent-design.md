@@ -1,13 +1,13 @@
 # capa Native Script Analysis and Rule Agent: Design
 
 Date: 2026-10-22
-Status: proposed for user review
+Status: approved for implementation planning
 
 ## Intent
 
 Deliver one end-to-end, upstream-ready capa capability: analyze scripts structurally, use the resulting evidence to draft useful capa rules, verify those rules against the official tooling and sample corpus, and prepare pull requests for human maintainers. The language delivery order is PowerShell, Python, then Bash. The rule agent also handles ordinary capa rule ideas and binary samples; script support is an additional evidence source, not a separate agent.
 
-The user wants the full scope without a 350-hour cap and will use hosted Gemini through an API key in the local `.env`. No self-hosted model is required. Python is not a required implementation language for the new parser and agent. **Recommended implementation:** Go for both new components, with only the adapter code necessary to plug into capa's existing Python API. This recommendation remains subject to user approval.
+The user wants the full scope without a 350-hour cap and will use hosted Gemini through an API key in the local `.env`. No self-hosted model is required. Python is not a required implementation language for the new parser and agent. The approved implementation uses Go for both new components, with only the adapter code necessary to plug into capa's existing Python API.
 
 ## Current state and constraints
 
@@ -120,7 +120,7 @@ Version the `ScriptEvidence`/`RuleRequest` interchange schemas and pin compatibl
 5. Add Python through the same contract, then Bash, each with language-specific corpus and rules.
 6. Add scheduled feeds and operational controls after manual/reactive quality gates have evidence. Run cross-repository compatibility and final security/quality review.
 
-Each phase should produce a reviewable, independently testable change. The later implementation plan will give exact files, interfaces, tests, commands, and PR boundaries.
+Each phase should produce a reviewable, independently testable change. The linked [implementation roadmap](../plans/2026-10-22-capa-script-and-agent-roadmap.md) and its backend and agent task plans give files, interfaces, tests, commands, and PR boundaries.
 
 ## Skill use on this device
 
