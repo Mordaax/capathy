@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Union, TypeAlias
+from typing import Union, TypeAlias, cast
 from dataclasses import dataclass
 
 from capa.features.common import Feature
@@ -173,3 +173,35 @@ class NullDynamicFeatureExtractor(DynamicFeatureExtractor):
 
 
 NullFeatureExtractor: TypeAlias = Union[NullStaticFeatureExtractor, NullDynamicFeatureExtractor]
+
+
+@dataclass
+class StatementFeatures:
+    """Source-local features retained by a frozen script extractor."""
+
+    features: list[tuple[Address, Feature]]
+
+
+@dataclass
+class ScriptFunctionFeatures(FunctionFeatures):
+    statements: dict[tuple[Address, int], StatementFeatures]
+
+
+# Import here keeps the existing binary extractor declarations unchanged.
+from capa.features.extractors.base_extractor import StatementHandle, ScriptStaticFeatureExtractor
+
+
+@dataclass
+class NullScriptFeatureExtractor(NullStaticFeatureExtractor, ScriptStaticFeatureExtractor):
+    """In-memory source extractor used by tests and freeze deserialization."""
+
+    document: dict | None = None
+
+    def get_statements(self, fh):
+        function = cast(ScriptFunctionFeatures, self.functions[fh.address])
+        for (address, ordinal), statement in sorted(function.statements.items()):
+            yield StatementHandle(address, statement, ordinal)
+
+    def extract_statement_features(self, fh, sh):
+        for address, feature in sh.inner.features:
+            yield feature, address

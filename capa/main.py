@@ -52,6 +52,7 @@ from capa.loader import (
     BACKEND_FREEZE,
     BACKEND_GHIDRA,
     BACKEND_PEFILE,
+    BACKEND_SCRIPT,
     BACKEND_DRAKVUF,
     BACKEND_BINEXPORT2,
 )
@@ -268,6 +269,9 @@ def install_common_args(parser, wanted=None):
     if "format" in wanted:
         formats = [
             (FORMAT_AUTO, "(default) detect file type automatically"),
+            ("powershell", "PowerShell source (native script helper)"),
+            ("python", "Python source (native script helper)"),
+            ("bash", "Bash source (native script helper)"),
             (FORMAT_PE, "Windows PE file"),
             (FORMAT_DOTNET, ".NET PE file"),
             (FORMAT_ELF, "Executable and Linkable Format"),
@@ -293,6 +297,7 @@ def install_common_args(parser, wanted=None):
     if "backend" in wanted:
         backends = [
             (BACKEND_AUTO, "(default) detect appropriate backend automatically"),
+            (BACKEND_SCRIPT, "native Tree-sitter script helper"),
             (BACKEND_VIV, "vivisect"),
             (BACKEND_IDA, "IDA via idalib"),
             (BACKEND_PEFILE, "pefile (file features only)"),
@@ -579,6 +584,9 @@ def get_backend_from_cli(args, input_format: str) -> str:
     """
     if args.backend != BACKEND_AUTO:
         return args.backend
+
+    if input_format in ("powershell", "python", "bash"):
+        return BACKEND_SCRIPT
 
     if input_format == FORMAT_CAPE:
         return BACKEND_CAPE

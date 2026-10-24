@@ -222,7 +222,11 @@ def get_format_from_report(sample: Path) -> str:
 
 def get_format_from_extension(sample: Path) -> str:
     format_ = FORMAT_UNKNOWN
-    if sample.name.endswith(EXTENSIONS_SHELLCODE_32):
+    if sample.suffix.lower() in (".ps1", ".psm1", ".py", ".sh", ".bash"):
+        format_ = {".ps1": "powershell", ".psm1": "powershell", ".py": "python", ".sh": "bash", ".bash": "bash"}[
+            sample.suffix.lower()
+        ]
+    elif sample.name.endswith(EXTENSIONS_SHELLCODE_32):
         format_ = FORMAT_SC32
     elif sample.name.endswith(EXTENSIONS_SHELLCODE_64):
         format_ = FORMAT_SC64
@@ -253,7 +257,8 @@ def get_format(sample: Path) -> str:
     from capa.features.extractors.common import extract_format
     from capa.features.extractors.dotnetfile import DotnetFileFeatureExtractor
 
-    buf = sample.read_bytes()
+    with sample.open("rb") as stream:
+        buf = stream.read(0x100)
 
     for feature, _ in extract_format(buf):
         if feature == Format(FORMAT_PE):

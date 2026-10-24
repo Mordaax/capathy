@@ -93,6 +93,9 @@ class Result:
         self.statement = statement
         self.children = children
         self.locations = frozenset(locations) if locations is not None else frozenset()
+        # Source statements can share byte offsets; retain dependency results from
+        # this exact statement instead of looking them up only by address.
+        self.statement_capabilities: Optional[capa.engine.MatchResults] = None
 
     def __eq__(self, other):
         if isinstance(other, bool):
@@ -490,7 +493,11 @@ class OS(Feature):
 FORMAT_PE = "pe"
 FORMAT_ELF = "elf"
 FORMAT_DOTNET = "dotnet"
-VALID_FORMAT = (FORMAT_PE, FORMAT_ELF, FORMAT_DOTNET)
+FORMAT_POWERSHELL = "powershell"
+FORMAT_PYTHON = "python"
+FORMAT_BASH = "bash"
+SCRIPT_FORMATS = (FORMAT_POWERSHELL, FORMAT_PYTHON, FORMAT_BASH)
+VALID_FORMAT = (FORMAT_PE, FORMAT_ELF, FORMAT_DOTNET, *SCRIPT_FORMATS)
 # internal only, not to be used in rules
 FORMAT_AUTO = "auto"
 FORMAT_SC32 = "sc32"
@@ -503,6 +510,7 @@ FORMAT_FREEZE = "freeze"
 FORMAT_RESULT = "result"
 FORMAT_BINJA_DB = "binja_database"
 STATIC_FORMATS = {
+    *SCRIPT_FORMATS,
     FORMAT_SC32,
     FORMAT_SC64,
     FORMAT_PE,

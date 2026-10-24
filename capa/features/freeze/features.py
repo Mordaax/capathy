@@ -19,6 +19,7 @@ from pydantic import Field, BaseModel, ConfigDict
 import capa.features.file
 import capa.features.insn
 import capa.features.common
+import capa.features.script
 import capa.features.basicblock
 
 
@@ -26,7 +27,13 @@ class FeatureModel(BaseModel):
     model_config = ConfigDict(frozen=True, populate_by_name=True)
 
     def to_capa(self) -> capa.features.common.Feature:
-        if isinstance(self, OSFeature):
+        if isinstance(self, ScriptCallFeature):
+            return capa.features.script.ScriptCall(self.script_call, description=self.description)
+        elif isinstance(self, ScriptVariableFeature):
+            return capa.features.script.ScriptVariable(self.script_variable, self.access, description=self.description)
+        elif isinstance(self, ScriptStructureFeature):
+            return capa.features.script.ScriptStructure(self.script_structure, description=self.description)
+        elif isinstance(self, OSFeature):
             return capa.features.common.OS(self.os, description=self.description)
 
         elif isinstance(self, ArchFeature):
@@ -111,7 +118,13 @@ class FeatureModel(BaseModel):
 
 
 def feature_from_capa(f: capa.features.common.Feature) -> "Feature":
-    if isinstance(f, capa.features.common.OS):
+    if isinstance(f, capa.features.script.ScriptCall):
+        return ScriptCallFeature(script_call=f.value, description=f.description)
+    elif isinstance(f, capa.features.script.ScriptVariable):
+        return ScriptVariableFeature(script_variable=f.value, access=f.access, description=f.description)
+    elif isinstance(f, capa.features.script.ScriptStructure):
+        return ScriptStructureFeature(script_structure=f.value, description=f.description)
+    elif isinstance(f, capa.features.common.OS):
         assert isinstance(f.value, str)
         return OSFeature(os=f.value, description=f.description)
 
@@ -212,6 +225,25 @@ def feature_from_capa(f: capa.features.common.Feature) -> "Feature":
 
     else:
         raise NotImplementedError(f"feature_from_capa({type(f)}) not implemented")
+
+
+class ScriptCallFeature(FeatureModel):
+    type: Literal["script-call"] = "script-call"
+    script_call: str = Field(alias="script-call")
+    description: Optional[str] = None
+
+
+class ScriptVariableFeature(FeatureModel):
+    type: Literal["script-variable"] = "script-variable"
+    script_variable: str = Field(alias="script-variable")
+    access: Literal["read", "write"]
+    description: Optional[str] = None
+
+
+class ScriptStructureFeature(FeatureModel):
+    type: Literal["script-structure"] = "script-structure"
+    script_structure: str = Field(alias="script-structure")
+    description: Optional[str] = None
 
 
 class OSFeature(FeatureModel):
@@ -356,6 +388,9 @@ class OperandOffsetFeature(FeatureModel):
 
 Feature = Annotated[
     Union[
+        ScriptCallFeature,
+        ScriptVariableFeature,
+        ScriptStructureFeature,
         OSFeature,
         ArchFeature,
         FormatFeature,

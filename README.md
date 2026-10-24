@@ -89,6 +89,9 @@ To use capa as a library or integrate with another tool, see [doc/installation.m
 
 **Documentation:** [Usage and tips](doc/usage.md) · [Installation](doc/installation.md) · [Limitations](doc/limitations.md) · [FAQ](doc/faq.md)
 
+**Script analysis extension:** [Build and usage](doc/script-analysis.md) · [Implementation status](docs/implementation/2026-10-24-progress.md)
+
+
 # capa Explorer Web
 The [capa Explorer Web](https://mandiant.github.io/capa/explorer/) enables you to interactively explore capa results in your web browser. Besides the online version you can download a standalone HTML file for local offline usage.
 

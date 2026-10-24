@@ -95,6 +95,7 @@ class _ScopeEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumType
     SCOPE_THREAD: _Scope.ValueType  # 6
     SCOPE_CALL: _Scope.ValueType  # 7
     SCOPE_SPAN_OF_CALLS: _Scope.ValueType  # 8
+    SCOPE_STATEMENT: _Scope.ValueType  # 9
 
 class Scope(_Scope, metaclass=_ScopeEnumTypeWrapper): ...
 
@@ -107,6 +108,7 @@ SCOPE_PROCESS: Scope.ValueType  # 5
 SCOPE_THREAD: Scope.ValueType  # 6
 SCOPE_CALL: Scope.ValueType  # 7
 SCOPE_SPAN_OF_CALLS: Scope.ValueType  # 8
+SCOPE_STATEMENT: Scope.ValueType  # 9
 global___Scope = Scope
 
 @typing.final
@@ -534,6 +536,9 @@ class FeatureNode(google.protobuf.message.Message):
     OPERAND_NUMBER_FIELD_NUMBER: builtins.int
     OPERAND_OFFSET_FIELD_NUMBER: builtins.int
     BASIC_BLOCK_FIELD_NUMBER: builtins.int
+    SCRIPT_CALL_FIELD_NUMBER: builtins.int
+    SCRIPT_VARIABLE_FIELD_NUMBER: builtins.int
+    SCRIPT_STRUCTURE_FIELD_NUMBER: builtins.int
     type: builtins.str
     @property
     def os(self) -> global___OSFeature: ...
@@ -585,6 +590,12 @@ class FeatureNode(google.protobuf.message.Message):
     def operand_offset(self) -> global___OperandOffsetFeature: ...
     @property
     def basic_block(self) -> global___BasicBlockFeature: ...
+    @property
+    def script_call(self) -> global___ScriptCallFeature: ...
+    @property
+    def script_variable(self) -> global___ScriptVariableFeature: ...
+    @property
+    def script_structure(self) -> global___ScriptStructureFeature: ...
     def __init__(
         self,
         *,
@@ -612,12 +623,87 @@ class FeatureNode(google.protobuf.message.Message):
         operand_number: global___OperandNumberFeature | None = ...,
         operand_offset: global___OperandOffsetFeature | None = ...,
         basic_block: global___BasicBlockFeature | None = ...,
+        script_call: global___ScriptCallFeature | None = ...,
+        script_variable: global___ScriptVariableFeature | None = ...,
+        script_structure: global___ScriptStructureFeature | None = ...,
     ) -> None: ...
-    def HasField(self, field_name: typing.Literal["api", b"api", "arch", b"arch", "basic_block", b"basic_block", "bytes", b"bytes", "characteristic", b"characteristic", "class_", b"class_", "export", b"export", "feature", b"feature", "format", b"format", "function_name", b"function_name", "import_", b"import_", "match", b"match", "mnemonic", b"mnemonic", "namespace", b"namespace", "number", b"number", "offset", b"offset", "operand_number", b"operand_number", "operand_offset", b"operand_offset", "os", b"os", "property_", b"property_", "regex", b"regex", "section", b"section", "string", b"string", "substring", b"substring"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["api", b"api", "arch", b"arch", "basic_block", b"basic_block", "bytes", b"bytes", "characteristic", b"characteristic", "class_", b"class_", "export", b"export", "feature", b"feature", "format", b"format", "function_name", b"function_name", "import_", b"import_", "match", b"match", "mnemonic", b"mnemonic", "namespace", b"namespace", "number", b"number", "offset", b"offset", "operand_number", b"operand_number", "operand_offset", b"operand_offset", "os", b"os", "property_", b"property_", "regex", b"regex", "section", b"section", "string", b"string", "substring", b"substring", "type", b"type"]) -> None: ...
-    def WhichOneof(self, oneof_group: typing.Literal["feature", b"feature"]) -> typing.Literal["os", "arch", "format", "match", "characteristic", "export", "import_", "section", "function_name", "substring", "regex", "string", "class_", "namespace", "api", "property_", "number", "bytes", "offset", "mnemonic", "operand_number", "operand_offset", "basic_block"] | None: ...
+    def HasField(self, field_name: typing.Literal["api", b"api", "arch", b"arch", "basic_block", b"basic_block", "bytes", b"bytes", "characteristic", b"characteristic", "class_", b"class_", "export", b"export", "feature", b"feature", "format", b"format", "function_name", b"function_name", "import_", b"import_", "match", b"match", "mnemonic", b"mnemonic", "namespace", b"namespace", "number", b"number", "offset", b"offset", "operand_number", b"operand_number", "operand_offset", b"operand_offset", "os", b"os", "property_", b"property_", "regex", b"regex", "script_call", b"script_call", "script_structure", b"script_structure", "script_variable", b"script_variable", "section", b"section", "string", b"string", "substring", b"substring"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["api", b"api", "arch", b"arch", "basic_block", b"basic_block", "bytes", b"bytes", "characteristic", b"characteristic", "class_", b"class_", "export", b"export", "feature", b"feature", "format", b"format", "function_name", b"function_name", "import_", b"import_", "match", b"match", "mnemonic", b"mnemonic", "namespace", b"namespace", "number", b"number", "offset", b"offset", "operand_number", b"operand_number", "operand_offset", b"operand_offset", "os", b"os", "property_", b"property_", "regex", b"regex", "script_call", b"script_call", "script_structure", b"script_structure", "script_variable", b"script_variable", "section", b"section", "string", b"string", "substring", b"substring", "type", b"type"]) -> None: ...
+    def WhichOneof(self, oneof_group: typing.Literal["feature", b"feature"]) -> typing.Literal["os", "arch", "format", "match", "characteristic", "export", "import_", "section", "function_name", "substring", "regex", "string", "class_", "namespace", "api", "property_", "number", "bytes", "offset", "mnemonic", "operand_number", "operand_offset", "basic_block", "script_call", "script_variable", "script_structure"] | None: ...
 
 global___FeatureNode = FeatureNode
+
+@typing.final
+class ScriptCallFeature(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    TYPE_FIELD_NUMBER: builtins.int
+    SCRIPT_CALL_FIELD_NUMBER: builtins.int
+    DESCRIPTION_FIELD_NUMBER: builtins.int
+    type: builtins.str
+    script_call: builtins.str
+    description: builtins.str
+    def __init__(
+        self,
+        *,
+        type: builtins.str = ...,
+        script_call: builtins.str = ...,
+        description: builtins.str | None = ...,
+    ) -> None: ...
+    def HasField(self, field_name: typing.Literal["_description", b"_description", "description", b"description"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["_description", b"_description", "description", b"description", "script_call", b"script_call", "type", b"type"]) -> None: ...
+    def WhichOneof(self, oneof_group: typing.Literal["_description", b"_description"]) -> typing.Literal["description"] | None: ...
+
+global___ScriptCallFeature = ScriptCallFeature
+
+@typing.final
+class ScriptVariableFeature(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    TYPE_FIELD_NUMBER: builtins.int
+    SCRIPT_VARIABLE_FIELD_NUMBER: builtins.int
+    ACCESS_FIELD_NUMBER: builtins.int
+    DESCRIPTION_FIELD_NUMBER: builtins.int
+    type: builtins.str
+    script_variable: builtins.str
+    access: builtins.str
+    description: builtins.str
+    def __init__(
+        self,
+        *,
+        type: builtins.str = ...,
+        script_variable: builtins.str = ...,
+        access: builtins.str = ...,
+        description: builtins.str | None = ...,
+    ) -> None: ...
+    def HasField(self, field_name: typing.Literal["_description", b"_description", "description", b"description"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["_description", b"_description", "access", b"access", "description", b"description", "script_variable", b"script_variable", "type", b"type"]) -> None: ...
+    def WhichOneof(self, oneof_group: typing.Literal["_description", b"_description"]) -> typing.Literal["description"] | None: ...
+
+global___ScriptVariableFeature = ScriptVariableFeature
+
+@typing.final
+class ScriptStructureFeature(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    TYPE_FIELD_NUMBER: builtins.int
+    SCRIPT_STRUCTURE_FIELD_NUMBER: builtins.int
+    DESCRIPTION_FIELD_NUMBER: builtins.int
+    type: builtins.str
+    script_structure: builtins.str
+    description: builtins.str
+    def __init__(
+        self,
+        *,
+        type: builtins.str = ...,
+        script_structure: builtins.str = ...,
+        description: builtins.str | None = ...,
+    ) -> None: ...
+    def HasField(self, field_name: typing.Literal["_description", b"_description", "description", b"description"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["_description", b"_description", "description", b"description", "script_structure", b"script_structure", "type", b"type"]) -> None: ...
+    def WhichOneof(self, oneof_group: typing.Literal["_description", b"_description"]) -> typing.Literal["description"] | None: ...
+
+global___ScriptStructureFeature = ScriptStructureFeature
 
 @typing.final
 class FormatFeature(google.protobuf.message.Message):
@@ -668,18 +754,22 @@ class FunctionLayout(google.protobuf.message.Message):
 
     ADDRESS_FIELD_NUMBER: builtins.int
     MATCHED_BASIC_BLOCKS_FIELD_NUMBER: builtins.int
+    MATCHED_STATEMENTS_FIELD_NUMBER: builtins.int
     @property
     def address(self) -> global___Address: ...
     @property
     def matched_basic_blocks(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___BasicBlockLayout]: ...
+    @property
+    def matched_statements(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___Address]: ...
     def __init__(
         self,
         *,
         address: global___Address | None = ...,
         matched_basic_blocks: collections.abc.Iterable[global___BasicBlockLayout] | None = ...,
+        matched_statements: collections.abc.Iterable[global___Address] | None = ...,
     ) -> None: ...
     def HasField(self, field_name: typing.Literal["address", b"address"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["address", b"address", "matched_basic_blocks", b"matched_basic_blocks"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["address", b"address", "matched_basic_blocks", b"matched_basic_blocks", "matched_statements", b"matched_statements"]) -> None: ...
 
 global___FunctionLayout = FunctionLayout
 
@@ -1520,10 +1610,12 @@ class StaticAnalysis(google.protobuf.message.Message):
     LAYOUT_FIELD_NUMBER: builtins.int
     FEATURE_COUNTS_FIELD_NUMBER: builtins.int
     LIBRARY_FUNCTIONS_FIELD_NUMBER: builtins.int
+    SCRIPT_JSON_FIELD_NUMBER: builtins.int
     format: builtins.str
     arch: builtins.str
     os: builtins.str
     extractor: builtins.str
+    script_json: builtins.str
     @property
     def rules(self) -> google.protobuf.internal.containers.RepeatedScalarFieldContainer[builtins.str]: ...
     @property
@@ -1546,9 +1638,11 @@ class StaticAnalysis(google.protobuf.message.Message):
         layout: global___StaticLayout | None = ...,
         feature_counts: global___StaticFeatureCounts | None = ...,
         library_functions: collections.abc.Iterable[global___LibraryFunction] | None = ...,
+        script_json: builtins.str | None = ...,
     ) -> None: ...
-    def HasField(self, field_name: typing.Literal["base_address", b"base_address", "feature_counts", b"feature_counts", "layout", b"layout"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["arch", b"arch", "base_address", b"base_address", "extractor", b"extractor", "feature_counts", b"feature_counts", "format", b"format", "layout", b"layout", "library_functions", b"library_functions", "os", b"os", "rules", b"rules"]) -> None: ...
+    def HasField(self, field_name: typing.Literal["_script_json", b"_script_json", "base_address", b"base_address", "feature_counts", b"feature_counts", "layout", b"layout", "script_json", b"script_json"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing.Literal["_script_json", b"_script_json", "arch", b"arch", "base_address", b"base_address", "extractor", b"extractor", "feature_counts", b"feature_counts", "format", b"format", "layout", b"layout", "library_functions", b"library_functions", "os", b"os", "rules", b"rules", "script_json", b"script_json"]) -> None: ...
+    def WhichOneof(self, oneof_group: typing.Literal["_script_json", b"_script_json"]) -> typing.Literal["script_json"] | None: ...
 
 global___StaticAnalysis = StaticAnalysis
 

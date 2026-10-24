@@ -160,7 +160,29 @@ message FeatureNode {
     OperandNumberFeature operand_number = 22;
     OperandOffsetFeature operand_offset = 23;
     BasicBlockFeature basic_block = 24;
+    ScriptCallFeature script_call = 25;
+    ScriptVariableFeature script_variable = 26;
+    ScriptStructureFeature script_structure = 27;
   };
+}
+
+message ScriptCallFeature {
+  string type = 1;
+  string script_call = 2;
+  optional string description = 3;
+}
+
+message ScriptVariableFeature {
+  string type = 1;
+  string script_variable = 2;
+  string access = 3;
+  optional string description = 4;
+}
+
+message ScriptStructureFeature {
+  string type = 1;
+  string script_structure = 2;
+  optional string description = 3;
 }
 
 message FormatFeature {
@@ -177,6 +199,7 @@ message FunctionFeatureCount {
 message FunctionLayout {
   Address address = 1;
   repeated BasicBlockLayout matched_basic_blocks = 2;
+  repeated Address matched_statements = 3;
 }
 
 message FunctionNameFeature {
@@ -379,6 +402,7 @@ enum Scope {
   SCOPE_THREAD = 6;
   SCOPE_CALL = 7;
   SCOPE_SPAN_OF_CALLS = 8;
+  SCOPE_STATEMENT = 9;
 }
 
 message Scopes {
@@ -418,6 +442,7 @@ message StaticAnalysis {
   StaticLayout layout = 7;
   StaticFeatureCounts feature_counts = 8;
   repeated LibraryFunction library_functions = 9;
+  optional string script_json = 10;
 }
 
 message StaticFeatureCounts {

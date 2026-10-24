@@ -57,6 +57,7 @@ class BasicBlockLayout(Model):
 class FunctionLayout(Model):
     address: frz.Address
     matched_basic_blocks: tuple[BasicBlockLayout, ...]
+    matched_statements: tuple[frz.Address, ...] | None = None
 
 
 class CallLayout(Model):
@@ -115,6 +116,7 @@ FeatureCounts: TypeAlias = Union[StaticFeatureCounts, DynamicFeatureCounts]
 
 
 class StaticAnalysis(Model):
+    script: dict | None = None
     format: str
     arch: str
     os: str
@@ -334,6 +336,8 @@ class Match(FrozenModel):
         capabilities: MatchResults,
         result: capa.engine.Result,
     ) -> "Match":
+        if result.statement_capabilities is not None:
+            capabilities = result.statement_capabilities
         success = bool(result)
 
         node = node_from_capa(result.statement)

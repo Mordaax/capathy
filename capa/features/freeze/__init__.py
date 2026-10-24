@@ -34,11 +34,13 @@ from capa.features.extractors.base_extractor import (
     FeatureExtractor,
     StaticFeatureExtractor,
     DynamicFeatureExtractor,
+    ScriptStaticFeatureExtractor,
 )
 
 logger = logging.getLogger(__name__)
 
 CURRENT_VERSION = 3
+SCRIPT_VERSION = 4
 
 
 class HashableModel(BaseModel):
@@ -284,10 +286,17 @@ class BasicBlockFeatures(BaseModel):
     instructions: tuple[InstructionFeatures, ...]
 
 
+class StatementFeatures(BaseModel):
+    address: Address
+    ordinal: int
+    features: tuple[FunctionFeature, ...]
+
+
 class FunctionFeatures(BaseModel):
     address: Address
     features: tuple[FunctionFeature, ...]
     basic_blocks: tuple[BasicBlockFeatures, ...] = Field(alias="basic blocks")
+    statements: tuple[StatementFeatures, ...] | None = None
     model_config = ConfigDict(populate_by_name=True)
 
 
@@ -340,6 +349,7 @@ class Freeze(BaseModel):
     flavor: Literal["static", "dynamic"]
     extractor: Extractor
     features: Features
+    script_evidence: dict | None = None
     model_config = ConfigDict(populate_by_name=True)
 
 
@@ -431,6 +441,21 @@ def dumps_static(extractor: StaticFeatureExtractor, reproducible: bool = False) 
             FunctionFeatures(
                 address=faddr,
                 features=tuple(ffeatures),
+                statements=tuple(
+                    StatementFeatures(
+                        address=Address.from_capa(sh.address),
+                        ordinal=sh.ordinal,
+                        features=tuple(
+                            FunctionFeature(
+                                function=faddr, address=Address.from_capa(address), feature=feature_from_capa(feature)
+                            )
+                            for feature, address in extractor.extract_statement_features(f, sh)
+                        ),
+                    )
+                    for sh in extractor.get_statements(f)
+                )
+                if isinstance(extractor, ScriptStaticFeatureExtractor)
+                else None,
                 basic_blocks=basic_blocks,  # type: ignore[call-arg]  # pydantic alias "basic blocks" not recognized by type checkers
             )
         )
@@ -445,10 +470,13 @@ def dumps_static(extractor: StaticFeatureExtractor, reproducible: bool = False) 
 
     extractor_version = "" if reproducible else capa.version.__version__
     freeze = Freeze(
-        version=CURRENT_VERSION,
+        version=SCRIPT_VERSION if isinstance(extractor, ScriptStaticFeatureExtractor) else CURRENT_VERSION,
         base_address=Address.from_capa(extractor.get_base_address()),  # type: ignore[call-arg]  # pydantic alias "base address" not recognized by type checkers
         sample_hashes=extractor.get_sample_hashes(),
         flavor="static",
+        script_evidence=getattr(extractor, "document", {})
+        if isinstance(extractor, ScriptStaticFeatureExtractor)
+        else None,
         extractor=Extractor(name=extractor.__class__.__name__, version=extractor_version),
         features=features,
     )
@@ -579,11 +607,35 @@ def dumps_dynamic(extractor: DynamicFeatureExtractor, reproducible: bool = False
 def loads_static(s: str) -> StaticFeatureExtractor:
     """deserialize a set of features (as a NullStaticFeatureExtractor) from a string."""
     freeze = Freeze.model_validate_json(s)
-    if freeze.version != CURRENT_VERSION:
+    if freeze.version not in (CURRENT_VERSION, SCRIPT_VERSION):
         raise ValueError(f"unsupported freeze format version: {freeze.version}")
+    if freeze.version == SCRIPT_VERSION and freeze.script_evidence is None:
+        raise ValueError("script freeze is missing source evidence")
 
     assert freeze.flavor == "static"
     assert isinstance(freeze.features, StaticFeatures)
+
+    if freeze.script_evidence is not None:
+        return null.NullScriptFeatureExtractor(
+            base_address=freeze.base_address.to_capa(),
+            sample_hashes=freeze.sample_hashes,
+            global_features=[f.feature.to_capa() for f in freeze.features.global_],
+            file_features=[(f.address.to_capa(), f.feature.to_capa()) for f in freeze.features.file],
+            functions={
+                f.address.to_capa(): null.ScriptFunctionFeatures(
+                    features=[(fe.address.to_capa(), fe.feature.to_capa()) for fe in f.features],
+                    basic_blocks={},
+                    statements={
+                        (sh.address.to_capa(), sh.ordinal): null.StatementFeatures(
+                            features=[(fe.address.to_capa(), fe.feature.to_capa()) for fe in sh.features]
+                        )
+                        for sh in (f.statements or ())
+                    },
+                )
+                for f in freeze.features.functions
+            },
+            document=freeze.script_evidence,
+        )
 
     return null.NullStaticFeatureExtractor(
         base_address=freeze.base_address.to_capa(),
@@ -675,7 +727,7 @@ def is_freeze(buf: bytes) -> bool:
 def loads(s: str) -> FeatureExtractor:
     doc = json.loads(s)
 
-    if doc["version"] != CURRENT_VERSION:
+    if doc["version"] not in (CURRENT_VERSION, SCRIPT_VERSION):
         raise ValueError(f"unsupported freeze format version: {doc['version']}")
 
     if doc["flavor"] == "static":

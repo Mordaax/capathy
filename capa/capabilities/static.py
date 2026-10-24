@@ -16,7 +16,7 @@ import time
 import logging
 import itertools
 import collections
-from dataclasses import dataclass
+from dataclasses import field, dataclass
 
 import capa.engine
 import capa.helpers
@@ -25,7 +25,14 @@ import capa.render.result_document as rdoc
 from capa.rules import Scope, RuleSet
 from capa.engine import FeatureSet, MatchResults
 from capa.capabilities.common import Capabilities, find_file_capabilities
-from capa.features.extractors.base_extractor import BBHandle, InsnHandle, FunctionHandle, StaticFeatureExtractor
+from capa.features.extractors.base_extractor import (
+    BBHandle,
+    InsnHandle,
+    FunctionHandle,
+    StatementHandle,
+    StaticFeatureExtractor,
+    ScriptStaticFeatureExtractor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +119,7 @@ class CodeCapabilities:
     basic_block_matches: MatchResults
     instruction_matches: MatchResults
     feature_count: int
+    statement_matches: MatchResults = field(default_factory=dict)
 
 
 def find_code_capabilities(ruleset: RuleSet, extractor: StaticFeatureExtractor, fh: FunctionHandle) -> CodeCapabilities:
@@ -120,6 +128,9 @@ def find_code_capabilities(ruleset: RuleSet, extractor: StaticFeatureExtractor, 
     """
     # all features found within this function,
     # includes features found within basic blocks (and instructions).
+    if isinstance(extractor, ScriptStaticFeatureExtractor):
+        return find_script_code_capabilities(ruleset, extractor, fh)
+
     function_features: FeatureSet = collections.defaultdict(set)
 
     # matches found at the basic block scope.
@@ -154,6 +165,7 @@ def find_static_capabilities(
     all_function_matches: MatchResults = collections.defaultdict(list)
     all_bb_matches: MatchResults = collections.defaultdict(list)
     all_insn_matches: MatchResults = collections.defaultdict(list)
+    all_statement_matches: MatchResults = collections.defaultdict(list)
 
     # Accumulate into lists to avoid O(n²) tuple concatenation.
     # Tuples are immutable, so `t += (x,)` copies the entire tuple each time.
@@ -200,6 +212,7 @@ def find_static_capabilities(
                 code_capabilities.function_matches.items(),
                 code_capabilities.basic_block_matches.items(),
                 code_capabilities.instruction_matches.items(),
+                code_capabilities.statement_matches.items(),
             ):
                 if not ruleset.rules[name].is_subscope_rule():
                     match_count += len(matches_)
@@ -219,13 +232,16 @@ def find_static_capabilities(
             for rule_name, res in code_capabilities.instruction_matches.items():
                 all_insn_matches[rule_name].extend(res)
 
+            for rule_name, res in code_capabilities.statement_matches.items():
+                all_statement_matches[rule_name].extend(res)
+
             pbar.advance(task)
 
     # collection of features that captures the rule matches within function, BB, and instruction scopes.
     # mapping from feature (matched rule) to set of addresses at which it matched.
     function_and_lower_features: FeatureSet = collections.defaultdict(set)
     for rule_name, results in itertools.chain(
-        all_function_matches.items(), all_bb_matches.items(), all_insn_matches.items()
+        all_function_matches.items(), all_bb_matches.items(), all_insn_matches.items(), all_statement_matches.items()
     ):
         locations = {p[0] for p in results}
         rule = ruleset[rule_name]
@@ -244,6 +260,7 @@ def find_static_capabilities(
             # so there won't be any overlap among these following MatchResults,
             # and we can merge the dictionaries naively.
             all_insn_matches.items(),
+            all_statement_matches.items(),
             all_bb_matches.items(),
             all_function_matches.items(),
             all_file_capabilities.matches.items(),
@@ -251,3 +268,43 @@ def find_static_capabilities(
     )
 
     return Capabilities(matches, feature_counts, tuple(library_functions_list))
+
+
+def find_statement_capabilities(
+    ruleset: RuleSet, extractor: ScriptStaticFeatureExtractor, fh: FunctionHandle, sh: StatementHandle
+) -> InstructionCapabilities:
+    """Match one statement in isolation before rolling evidence into its function."""
+    features: FeatureSet = collections.defaultdict(set)
+    for feature, address in itertools.chain(
+        extractor.extract_statement_features(fh, sh), extractor.extract_global_features()
+    ):
+        features[feature].add(address)
+    _, matches = ruleset.match(Scope.STATEMENT, features, sh.address)
+    for name, results in matches.items():
+        dependencies = ruleset[name].get_dependencies(ruleset.rules_by_namespace)
+        local_dependencies = {dependency: matches[dependency] for dependency in dependencies if dependency in matches}
+        for _, result in results:
+            result.statement_capabilities = local_dependencies
+    for name, results in matches.items():
+        capa.engine.index_rule_matches(features, ruleset[name], {address for address, _ in results})
+    return InstructionCapabilities(features, matches)
+
+
+def find_script_code_capabilities(
+    ruleset: RuleSet, extractor: ScriptStaticFeatureExtractor, fh: FunctionHandle
+) -> CodeCapabilities:
+    """Aggregate source statements through the function and file rule hierarchy."""
+    features: FeatureSet = collections.defaultdict(set)
+    statements: MatchResults = collections.defaultdict(list)
+    for sh in extractor.get_statements(fh):
+        capabilities = find_statement_capabilities(ruleset, extractor, fh, sh)
+        for feature, locations in capabilities.features.items():
+            features[feature].update(locations)
+        for name, statement_results in capabilities.matches.items():
+            statements[name].extend(statement_results)
+    for feature, address in itertools.chain(
+        extractor.extract_function_features(fh), extractor.extract_global_features()
+    ):
+        features[feature].add(address)
+    _, matches = ruleset.match(Scope.FUNCTION, features, fh.address)
+    return CodeCapabilities(matches, {}, {}, len(features), dict(statements))

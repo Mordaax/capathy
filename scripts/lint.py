@@ -47,6 +47,7 @@ import capa.engine
 import capa.loader
 import capa.helpers
 import capa.features.insn
+import capa.features.script
 import capa.capabilities.common
 from capa.rules import Rule, RuleSet
 from capa.features.common import OS_AUTO, Regex, String, Feature, Substring
@@ -180,7 +181,9 @@ class MissingDynamicScope(Lint):
 
 class InvalidStaticScope(Lint):
     name = "invalid static scope"
-    recommendation = "For the static scope, use either: file, function, basic block, instruction, or unsupported"
+    recommendation = (
+        "For the static scope, use either: file, function, statement, basic block, instruction, or unsupported"
+    )
 
     def check_rule(self, ctx: Context, rule: Rule):
         scopes = rule.meta.get("scopes")
@@ -191,6 +194,7 @@ class InvalidStaticScope(Lint):
             "function",
             "basic block",
             "instruction",
+            "statement",
             "unsupported",
         )
 
@@ -249,7 +253,7 @@ class MissingExampleOffset(Lint):
     name = "missing example offset"
     recommendation = "Add offset of example (static: hash:0xADDR, dynamic: hash:(pid:N,tid:N,call:N))"
 
-    STATIC_SCOPES_NEEDING_OFFSET = ("function", "basic block")
+    STATIC_SCOPES_NEEDING_OFFSET = ("function", "basic block", "statement")
     DYNAMIC_SCOPES_NEEDING_OFFSET = ("process", "thread", "call", "span of calls")
 
     def check_rule(self, ctx: Context, rule: Rule):
@@ -516,6 +520,53 @@ class NotNotUnderAnd(Lint):
         rec(rule.statement)
 
         return self.violation
+
+
+class ScriptFeaturesMissingFormat(Lint):
+    name = "script features missing format"
+    recommendation = "Add an explicit powershell, python, or bash format condition to each script feature branch"
+
+    def check_rule(self, ctx: Context, rule: Rule):
+        # RuleSet extracts subscopes into derived rules. Inspect the original source
+        # tree so a format outside a statement subscope still protects that branch.
+        source = Rule.from_yaml(rule.definition) if rule.definition else rule
+        script_features = (
+            capa.features.script.ScriptCall,
+            capa.features.script.ScriptVariable,
+            capa.features.script.ScriptStructure,
+        )
+
+        def guarantees_format(node):
+            if isinstance(node, capa.features.common.Format):
+                return node.value in capa.features.common.SCRIPT_FORMATS
+            if isinstance(node, capa.engine.And):
+                return any(guarantees_format(child) for child in node.get_children())
+            if isinstance(node, capa.engine.Or):
+                children = list(node.get_children())
+                return bool(children) and all(guarantees_format(child) for child in children)
+            if isinstance(node, capa.engine.Some):
+                children = list(node.get_children())
+                return node.count > sum(not guarantees_format(child) for child in children)
+            if isinstance(node, capa.engine.Subscope):
+                return guarantees_format(node.child)
+            return False
+
+        def violates(node, guarded=False, positive=True, script_scope=False):
+            if isinstance(node, script_features):
+                return not guarded
+            if isinstance(node, capa.engine.Not):
+                return violates(node.child, guarded, not positive, script_scope)
+            if isinstance(node, capa.engine.Subscope):
+                script_scope = script_scope or node.scope == capa.rules.Scope.STATEMENT
+            if isinstance(node, (capa.engine.And, capa.engine.Some)) and positive:
+                guarded = guarded or guarantees_format(node)
+            if isinstance(node, capa.engine.Statement):
+                return any(violates(child, guarded, positive, script_scope) for child in node.get_children())
+            if script_scope:
+                return not (guarded or (positive and guarantees_format(node)))
+            return False
+
+        return violates(source.statement, script_scope=source.scopes.static == capa.rules.Scope.STATEMENT)
 
 
 class RuleDependencyScopeMismatch(Lint):
@@ -1092,6 +1143,7 @@ def get_rule_features(rule):
 
 
 LOGIC_LINTS = (
+    ScriptFeaturesMissingFormat(),
     DoesntMatchExample(),
     StatementWithSingleChildStatement(),
     OrStatementWithAlwaysTrueChild(),

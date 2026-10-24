@@ -1,0 +1,5 @@
+# This file documents defaults; this initial CLI takes trusted settings as flags.
+model_name: gemini-2.5-flash
+max_output_tokens: 8192
+disable_publication: true
+share_raw_source: false

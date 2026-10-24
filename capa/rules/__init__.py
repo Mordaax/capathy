@@ -40,6 +40,7 @@ import capa.features.com
 import capa.features.file
 import capa.features.insn
 import capa.features.common
+import capa.features.script
 import capa.features.basicblock
 from capa.engine import Statement, FeatureSet
 from capa.helpers import assert_never
@@ -88,6 +89,7 @@ class Scope(str, Enum):
     SPAN_OF_CALLS = "span of calls"
     CALL = "call"
     FUNCTION = "function"
+    STATEMENT = "statement"
     BASIC_BLOCK = "basic block"
     INSTRUCTION = "instruction"
 
@@ -103,6 +105,7 @@ class Scope(str, Enum):
 # these literals are used to check if the flavor
 # of a rule is correct.
 STATIC_SCOPES = {
+    Scope.STATEMENT,
     Scope.FILE,
     Scope.GLOBAL,
     Scope.FUNCTION,
@@ -177,6 +180,16 @@ class Scopes:
 
 
 SUPPORTED_FEATURES: dict[str, set] = {
+    Scope.STATEMENT: {
+        capa.features.script.ScriptCall,
+        capa.features.script.ScriptVariable,
+        capa.features.script.ScriptStructure,
+        capa.features.common.MatchedRule,
+        capa.features.common.String,
+        capa.features.common.Regex,
+        capa.features.common.Substring,
+        capa.features.insn.Number,
+    },
     Scope.GLOBAL: {
         # these will be added to other scopes, see below.
         capa.features.common.OS,
@@ -249,6 +262,8 @@ SUPPORTED_FEATURES: dict[str, set] = {
 }
 
 # global scope features are available in all other scopes
+SUPPORTED_FEATURES[Scope.STATEMENT].update(SUPPORTED_FEATURES[Scope.GLOBAL])
+SUPPORTED_FEATURES[Scope.FUNCTION].update(SUPPORTED_FEATURES[Scope.STATEMENT])
 SUPPORTED_FEATURES[Scope.INSTRUCTION].update(SUPPORTED_FEATURES[Scope.GLOBAL])
 SUPPORTED_FEATURES[Scope.BASIC_BLOCK].update(SUPPORTED_FEATURES[Scope.GLOBAL])
 SUPPORTED_FEATURES[Scope.FUNCTION].update(SUPPORTED_FEATURES[Scope.GLOBAL])
@@ -443,6 +458,12 @@ def parse_feature(key: str):
         return capa.features.common.Class
     elif key == "namespace":
         return capa.features.common.Namespace
+    elif key == "script-call":
+        return capa.features.script.ScriptCall
+    elif key == "script-structure":
+        return capa.features.script.ScriptStructure
+    elif key in ("script-variable/read", "script-variable/write"):
+        return functools.partial(capa.features.script.ScriptVariable, access=key.split("/")[1])
     elif key == "property":
         return capa.features.insn.Property
     elif key.startswith("operand[") and key.endswith("].number"):
@@ -614,6 +635,12 @@ def is_subscope_compatible(scope: Scope | None, subscope: Scope) -> bool:
     if not scope:
         return False
 
+    if subscope == Scope.STATEMENT:
+        return scope in (Scope.FILE, Scope.FUNCTION, Scope.STATEMENT)
+
+    if scope == Scope.STATEMENT:
+        return False
+
     if subscope in STATIC_SCOPE_ORDER:
         try:
             return STATIC_SCOPE_ORDER.index(subscope) >= STATIC_SCOPE_ORDER.index(scope)
@@ -747,6 +774,20 @@ def build_feature(
         or (key == "arch" and initial_value not in capa.features.common.VALID_ARCH)
     ):
         raise InvalidRule(f"unexpected {key} value {initial_value}")
+
+    elif key in ("script-call", "script-structure", "script-variable/read", "script-variable/write"):
+        value, description = parse_description(initial_value, key, description=initial_description)
+        if not isinstance(value, str):
+            raise InvalidRule(f"unexpected {key} value type: {type(value)}")
+        try:
+            if key.startswith("script-variable/"):
+                return capa.features.script.ScriptVariable(value, access=key.split("/")[1], description=description)
+            constructor = (
+                capa.features.script.ScriptCall if key == "script-call" else capa.features.script.ScriptStructure
+            )
+            return constructor(value, description=description)
+        except ValueError as e:
+            raise InvalidRule(str(e)) from e
 
     elif key.startswith("property/"):
         access = key[len("property/") :]
@@ -945,6 +986,12 @@ def build_statements(d, scopes: Scopes):
             build_statements(d[key][0], Scopes(static=Scope.FUNCTION)),
             description=description,
         )
+
+    elif key == "statement":
+        if not is_subscope_compatible(scopes.static, Scope.STATEMENT):
+            raise InvalidRule("`statement` subscope supported only for script scopes")
+        statements = ceng.And(unique(build_statements(dd, Scopes(static=Scope.STATEMENT)) for dd in d[key]))
+        return ceng.Subscope(Scope.STATEMENT, statements, description=description)
 
     elif key == "basic block":
         if not is_subscope_compatible(scopes.static, Scope.BASIC_BLOCK):
@@ -1208,7 +1255,11 @@ class Rule:
         if not isinstance(meta.get("mbc", []), list):
             raise InvalidRule("MBC mapping must be a list")
 
-        return cls(name, scopes, build_statements(statements[0], scopes), meta, definition)  # type: ignore[arg-type]  # build_statements infers wide union but top-level always returns Statement
+        statement = build_statements(statements[0], scopes)
+        # A root statement subscope still needs a parent so extraction can replace it with a match.
+        if isinstance(statement, ceng.Subscope) and statement.scope == Scope.STATEMENT:
+            statement = ceng.And([statement])
+        return cls(name, scopes, statement, meta, definition)  # type: ignore[arg-type]
 
     @staticmethod
     @lru_cache
@@ -1554,6 +1605,7 @@ class RuleSet:
             Scope.SPAN_OF_CALLS,
             Scope.THREAD,
             Scope.PROCESS,
+            Scope.STATEMENT,
             Scope.INSTRUCTION,
             Scope.BASIC_BLOCK,
             Scope.FUNCTION,
@@ -1604,6 +1656,10 @@ class RuleSet:
     @property
     def basic_block_rules(self):
         return self.rules_by_scope[Scope.BASIC_BLOCK]
+
+    @property
+    def statement_rules(self):
+        return self.rules_by_scope[Scope.STATEMENT]
 
     @property
     def instruction_rules(self):
@@ -1720,6 +1776,9 @@ class RuleSet:
             #
             capa.features.common.String: 9,
             capa.features.insn.API: 8,
+            capa.features.script.ScriptCall: 8,
+            capa.features.script.ScriptVariable: 5,
+            capa.features.script.ScriptStructure: 2,
             capa.features.file.Export: 7,
             # "uncommon numbers": 7 (placeholder for logic above)
             #

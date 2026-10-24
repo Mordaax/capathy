@@ -1,0 +1,6 @@
+[
+  {"source":"Invoke-WebRequest -Uri $u | Start-Process", "named_nodes":["command","pipeline"],"errors":false},
+  {"source":"function F { Write-Output 'hi' }", "named_nodes":["function_statement","command"],"errors":false},
+  {"source":"Get-ChildItem @args", "named_nodes":["variable","command"],"errors":false},
+  {"source":"function Broken { 'unterminated", "named_nodes":[],"errors":true}
+]

@@ -58,10 +58,12 @@ from capa.features.extractors.base_extractor import (
     FeatureExtractor,
     StaticFeatureExtractor,
     DynamicFeatureExtractor,
+    ScriptStaticFeatureExtractor,
 )
 
 logger = logging.getLogger(__name__)
 
+BACKEND_SCRIPT = "script"
 BACKEND_VIV = "vivisect"
 BACKEND_DOTNET = "dotnet"
 BACKEND_BINJA = "binja"
@@ -330,6 +332,14 @@ def get_extractor(
 
     # stderr=True is used here to redirect the spinner banner to stderr, so that users can redirect capa's output.
     console = Console(stderr=True, quiet=disable_progress)
+
+    if backend == BACKEND_SCRIPT:
+        from capa.features.extractors.script.extractor import TreeSitterScriptExtractor
+
+        try:
+            return TreeSitterScriptExtractor.from_path(input_path, input_format)
+        except ValueError as e:
+            raise CorruptFile(str(e)) from e
 
     if backend == BACKEND_CAPE:
         import capa.features.extractors.cape.extractor
@@ -636,6 +646,13 @@ def get_signatures(sigs_path: Path) -> list[Path]:
 def get_sample_analysis(format_, arch, os_, extractor, rules_path, feature_counts, library_functions):
     if isinstance(extractor, StaticFeatureExtractor):
         return rdoc.StaticAnalysis(
+            script={
+                **(getattr(extractor, "document", None) or {}),
+                "extractor_version": (getattr(extractor, "document", None) or {}).get("extractor_version", "unknown"),
+                "normalization_version": (getattr(extractor, "document", None) or {}).get("normalization_version", 1),
+            }
+            if isinstance(extractor, ScriptStaticFeatureExtractor)
+            else None,
             format=format_,
             arch=arch,
             os=os_,
@@ -816,6 +833,29 @@ def compute_static_layout(rules: RuleSet, extractor: StaticFeatureExtractor, cap
     otherwise, we may pollute the json document with
     a large amount of un-referenced data.
     """
+    if isinstance(extractor, ScriptStaticFeatureExtractor):
+        matched_statements = {
+            address
+            for name, matches in capabilities.items()
+            if capa.rules.Scope.STATEMENT in rules[name].scopes
+            for address, _ in matches
+        }
+        functions = []
+        for fh in extractor.get_functions():
+            addresses = tuple(
+                frz.Address.from_capa(sh.address)
+                for sh in extractor.get_statements(fh)
+                if sh.address in matched_statements
+            )
+            functions.append(
+                rdoc.FunctionLayout(
+                    address=frz.Address.from_capa(fh.address),
+                    matched_basic_blocks=(),
+                    matched_statements=addresses or None,
+                )
+            )
+        return rdoc.StaticLayout(functions=tuple(functions))
+
     functions_by_bb: dict[Address, Address] = {}
     bbs_by_function: dict[Address, list[Address]] = {}
     for f in extractor.get_functions():

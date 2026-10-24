@@ -521,3 +521,36 @@ def ThreadFilter(extractor: DynamicFeatureExtractor, threads: set[Address]) -> D
 
 
 FeatureExtractor: TypeAlias = Union[StaticFeatureExtractor, DynamicFeatureExtractor]
+
+
+@dataclass
+class StatementHandle:
+    """A source statement, with an ordinal to distinguish coincident offsets."""
+
+    address: Address
+    inner: Any
+    ordinal: int = 0
+
+
+class ScriptStaticFeatureExtractor(StaticFeatureExtractor):
+    """Static source extractor whose code scope is a statement."""
+
+    @abc.abstractmethod
+    def get_statements(self, fh: FunctionHandle) -> Iterator[StatementHandle]:
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    def extract_statement_features(self, fh: FunctionHandle, sh: StatementHandle) -> Iterator[tuple[Feature, Address]]:
+        raise NotImplementedError()
+
+    def get_basic_blocks(self, fh):
+        return iter(())
+
+    def extract_basic_block_features(self, fh, bbh):
+        return iter(())
+
+    def get_instructions(self, fh, bbh):
+        return iter(())
+
+    def extract_insn_features(self, fh, bbh, ih):
+        return iter(())

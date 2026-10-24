@@ -32,6 +32,7 @@ $ protoc.exe --python_out=. --mypy_out=. <path_to_proto> (e.g. capa/render/proto
 Alternatively, --pyi_out=. can be used to generate a Python Interface file that supports development
 """
 
+import json
 import datetime
 from typing import Any, Union
 
@@ -152,7 +153,9 @@ def addr_to_pb2(addr: frz.Address) -> capa_pb2.Address:
 
 
 def scope_to_pb2(scope: capa.rules.Scope) -> capa_pb2.Scope.ValueType:
-    if scope == capa.rules.Scope.FILE:
+    if scope == capa.rules.Scope.STATEMENT:
+        return capa_pb2.Scope.SCOPE_STATEMENT
+    elif scope == capa.rules.Scope.FILE:
         return capa_pb2.Scope.SCOPE_FILE
     elif scope == capa.rules.Scope.FUNCTION:
         return capa_pb2.Scope.SCOPE_FUNCTION
@@ -199,10 +202,12 @@ def static_analysis_to_pb2(analysis: rd.StaticAnalysis) -> capa_pb2.StaticAnalys
         extractor=analysis.extractor,
         rules=list(analysis.rules),
         base_address=addr_to_pb2(analysis.base_address),
+        script_json=json.dumps(analysis.script, sort_keys=True) if analysis.script is not None else None,
         layout=capa_pb2.StaticLayout(
             functions=[
                 capa_pb2.FunctionLayout(
                     address=addr_to_pb2(f.address),
+                    matched_statements=[addr_to_pb2(address) for address in f.matched_statements or ()],
                     matched_basic_blocks=[
                         capa_pb2.BasicBlockLayout(address=addr_to_pb2(bb.address)) for bb in f.matched_basic_blocks
                     ],
@@ -325,7 +330,26 @@ def statement_to_pb2(statement: rd.Statement) -> capa_pb2.StatementNode:
 
 
 def feature_to_pb2(f: frzf.Feature) -> capa_pb2.FeatureNode:
-    if isinstance(f, frzf.OSFeature):
+    if isinstance(f, frzf.ScriptCallFeature):
+        return capa_pb2.FeatureNode(
+            type="feature",
+            script_call=capa_pb2.ScriptCallFeature(type=f.type, script_call=f.script_call, description=f.description),
+        )
+    elif isinstance(f, frzf.ScriptVariableFeature):
+        return capa_pb2.FeatureNode(
+            type="feature",
+            script_variable=capa_pb2.ScriptVariableFeature(
+                type=f.type, script_variable=f.script_variable, access=f.access, description=f.description
+            ),
+        )
+    elif isinstance(f, frzf.ScriptStructureFeature):
+        return capa_pb2.FeatureNode(
+            type="feature",
+            script_structure=capa_pb2.ScriptStructureFeature(
+                type=f.type, script_structure=f.script_structure, description=f.description
+            ),
+        )
+    elif isinstance(f, frzf.OSFeature):
         return capa_pb2.FeatureNode(
             type="feature", os=capa_pb2.OSFeature(type=f.type, os=f.os, description=f.description)
         )
@@ -646,7 +670,9 @@ def addr_from_pb2(addr: capa_pb2.Address) -> frz.Address:
 
 
 def scope_from_pb2(scope: capa_pb2.Scope.ValueType) -> capa.rules.Scope:
-    if scope == capa_pb2.Scope.SCOPE_FILE:
+    if scope == capa_pb2.Scope.SCOPE_STATEMENT:
+        return capa.rules.Scope.STATEMENT
+    elif scope == capa_pb2.Scope.SCOPE_FILE:
         return capa.rules.Scope.FILE
     elif scope == capa_pb2.Scope.SCOPE_FUNCTION:
         return capa.rules.Scope.FUNCTION
@@ -690,10 +716,12 @@ def static_analysis_from_pb2(analysis: capa_pb2.StaticAnalysis) -> rd.StaticAnal
         extractor=analysis.extractor,
         rules=tuple(analysis.rules),
         base_address=addr_from_pb2(analysis.base_address),
+        script=json.loads(analysis.script_json) if analysis.HasField("script_json") else None,
         layout=rd.StaticLayout(
             functions=tuple([
                 rd.FunctionLayout(
                     address=addr_from_pb2(f.address),
+                    matched_statements=tuple(addr_from_pb2(address) for address in f.matched_statements) or None,
                     matched_basic_blocks=tuple([
                         rd.BasicBlockLayout(address=addr_from_pb2(bb.address)) for bb in f.matched_basic_blocks
                     ]),
@@ -821,7 +849,18 @@ def feature_from_pb2(f: capa_pb2.FeatureNode) -> frzf.Feature:
     # upstream issue: https://github.com/python/mypy/issues/6233
     ff: Any
 
-    if type_ == "os":
+    if type_ == "script_call":
+        ff = f.script_call
+        return frzf.ScriptCallFeature(script_call=ff.script_call, description=ff.description or None)
+    elif type_ == "script_variable":
+        ff = f.script_variable
+        return frzf.ScriptVariableFeature(
+            script_variable=ff.script_variable, access=ff.access, description=ff.description or None
+        )
+    elif type_ == "script_structure":
+        ff = f.script_structure
+        return frzf.ScriptStructureFeature(script_structure=ff.script_structure, description=ff.description or None)
+    elif type_ == "os":
         ff = f.os
         return frzf.OSFeature(os=ff.os, description=ff.description or None)
     elif type_ == "arch":
